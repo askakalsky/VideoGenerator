@@ -86,20 +86,18 @@ def build_ass_with_word_highlight(
     green="#00FF6A",
     white="#FFFFFF",
     font_name="Arial",
-    # размер шрифта ~7% от высоты (под TikTok хорошо заходит)
     font_scale=0.07,
-    margin_v_ratio=0.13,    # нижний отступ ~13% от высоты
-    margin_lr_ratio=0.06,   # боковые поля ~6% от ширины
-    outline_ratio=0.003,    # толщина контура пропорционально высоте
-    shadow_ratio=0.0,       # тень по желанию
-    align=2                 # 2 = bottom-center
+    margin_v_ratio=0.13,
+    margin_lr_ratio=0.06,
+    outline_ratio=0.003,
+    shadow_ratio=0.0,
+    align=2
 ):
     subs = pysubs2.SSAFile()
 
     # Привязываем координатную сетку сценария к реальному разрешению видео
     subs.info["PlayResX"] = video_w
     subs.info["PlayResY"] = video_h
-    # корректный скейлинг контура/тени
     subs.info["ScaledBorderAndShadow"] = "yes"
 
     # Относительные параметры -> абсолютные
@@ -130,7 +128,7 @@ def build_ass_with_word_highlight(
     style.borderstyle = 1
     style.outline = outline
     style.shadow = shadow
-    style.alignment = align           # 2 = центр снизу
+    style.alignment = align
     style.marginl = margin_l
     style.marginr = margin_r
     style.marginv = margin_v
@@ -155,58 +153,85 @@ def build_ass_with_word_highlight(
             text = escape_ass(get_attr(seg, "text", "").strip())
             if text and seg_start is not None and seg_end is not None:
                 subs.events.append(
-                    pysubs2.SSAEvent(start=sec_to_ms(seg_start), end=sec_to_ms(
-                        seg_end), text=text, style="TikTok")
+                    pysubs2.SSAEvent(start=sec_to_ms(seg_start),
+                                     end=sec_to_ms(seg_end),
+                                     text=text,
+                                     style="TikTok")
                 )
             continue
 
-        timed_indices = [
-            i for i, w in enumerate(words)
-            if get_attr(w, "start") is not None and get_attr(w, "end") is not None
-            and get_attr(w, "word", "").strip() != ""
-        ]
+        # Собираем слова с валидными таймингами
+        timed_words = []
+        for w in words:
+            w_start = get_attr(w, "start")
+            w_end = get_attr(w, "end")
+            w_text = get_attr(w, "word", "").strip()
+            if w_start is not None and w_end is not None and w_text:
+                timed_words.append({
+                    "start": w_start,
+                    "end": w_end,
+                    "text": w_text,
+                    "original": w
+                })
 
-        if not timed_indices:
+        if not timed_words:
             full_text = escape_ass(
                 "".join(get_attr(w, "word", "") for w in words).strip())
             if full_text and seg_start is not None and seg_end is not None:
                 subs.events.append(
-                    pysubs2.SSAEvent(start=sec_to_ms(seg_start), end=sec_to_ms(
-                        seg_end), text=full_text, style="TikTok")
+                    pysubs2.SSAEvent(start=sec_to_ms(seg_start),
+                                     end=sec_to_ms(seg_end),
+                                     text=full_text,
+                                     style="TikTok")
                 )
             continue
 
-        for k, ti in enumerate(timed_indices):
-            cur_w = words[ti]
-            cur_start = get_attr(cur_w, "start")
-            if k + 1 < len(timed_indices):
-                next_w = words[timed_indices[k + 1]]
-                cur_end = get_attr(next_w, "start")
+        # ВАЖНО: Создаём НЕперекрывающиеся события
+        for i, tw in enumerate(timed_words):
+            # Определяем точное время начала и конца для этого события
+            event_start = tw["start"]
+
+            # Конец события = начало следующего слова (чтобы не было перекрытий)
+            if i + 1 < len(timed_words):
+                event_end = timed_words[i + 1]["start"]
             else:
-                cur_end = seg_end if seg_end is not None else get_attr(
-                    cur_w, "end")
+                # Для последнего слова используем его собственный конец или конец сегмента
+                event_end = max(
+                    tw["end"], seg_end if seg_end is not None else tw["end"])
 
-            if cur_start is None or cur_end is None:
-                continue
-            if cur_end <= cur_start:
-                cur_end = cur_start + 0.01
+            # Защита от нулевой длительности
+            if event_end <= event_start:
+                event_end = event_start + 0.1
 
+            # Строим текст со всеми словами, но подсвечиваем только текущее
             parts = [f"{{\\c&H{white_ass}&}}"]
-            for j, t in enumerate(words):
-                token_text = escape_ass(get_attr(t, "word", ""))
+            for j, w in enumerate(words):
+                token_text = escape_ass(get_attr(w, "word", ""))
                 if not token_text:
                     continue
-                if j == ti:
+
+                # Проверяем, это текущее слово или нет
+                is_current = False
+                if j < len(words):
+                    # Сравниваем по тексту и примерному времени
+                    w_start = get_attr(w, "start")
+                    if (w_start is not None and
+                        abs(w_start - tw["start"]) < 0.01 and
+                            token_text.strip() == tw["text"]):
+                        is_current = True
+
+                if is_current:
                     parts.append(
                         f"{{\\c&H{green_ass}&}}{token_text}{{\\c&H{white_ass}&}}")
                 else:
                     parts.append(token_text)
+
             line = "".join(parts)
 
             subs.events.append(
                 pysubs2.SSAEvent(
-                    start=sec_to_ms(cur_start),
-                    end=sec_to_ms(cur_end),
+                    start=sec_to_ms(event_start),
+                    end=sec_to_ms(event_end),
                     text=line,
                     style="TikTok"
                 )
