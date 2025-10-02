@@ -1,3 +1,4 @@
 video_with_audio.mp4
-out.mp4
-out.ass
+*.mp4
+*.ass
+*.ttf
