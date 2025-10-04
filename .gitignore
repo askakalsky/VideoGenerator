@@ -10,3 +10,71 @@ video_with_audio.mp4
 *.wma
 *.mp3
 Сайт.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Project specific
+assets/downloads/*
+assets/output/*
+assets/temp/*
+assets/stock_videos/*
+!assets/downloads/.gitkeep
+!assets/output/.gitkeep
+!assets/temp/.gitkeep
+!assets/stock_videos/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config
+config/user_settings.json
+assets/history.json
+
+# Models (Whisper)
+*.pt
+models/
+
+# Backups
+*.backup
+.backup/

@@ -1,0 +1,89 @@
+# ============================================================================
+# CORE DEPENDENCIES
+# ============================================================================
+
+# Streamlit - веб-интерфейс
+streamlit>=1.28.0
+
+# Video processing
+moviepy>=1.0.3
+imageio>=2.31.0
+imageio-ffmpeg>=0.4.9
+
+# Audio processing
+pydub>=0.25.1
+
+# ============================================================================
+# MODULE SPECIFIC DEPENDENCIES
+# ============================================================================
+
+# YouTube Downloader
+yt-dlp>=2023.10.13
+
+# TikTok Subtitles (Whisper)
+stable-ts>=2.12.0
+openai-whisper>=20230314
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# Subtitles
+pysubs2>=1.6.1
+
+# ============================================================================
+# UTILITY LIBRARIES
+# ============================================================================
+
+# Data processing
+numpy>=1.21.0,<2.0.0
+pandas>=2.0.0
+
+# Image processing
+Pillow>=10.0.0
+
+# Progress bars
+tqdm>=4.65.0
+
+# HTTP requests
+requests>=2.31.0
+urllib3>=2.0.0
+
+# ============================================================================
+# DEVELOPMENT & OPTIONAL
+# ============================================================================
+
+# Type checking (optional)
+# mypy>=1.5.0
+# types-requests>=2.31.0
+
+# Testing (optional)
+# pytest>=7.4.0
+# pytest-cov>=4.1.0
+
+# Code formatting (optional)
+# black>=23.7.0
+# isort>=5.12.0
+# flake8>=6.1.0
+
+# ============================================================================
+# SYSTEM REQUIREMENTS
+# ============================================================================
+
+# Note: FFmpeg must be installed separately
+# Installation instructions:
+#
+# Windows:
+#   Download from https://ffmpeg.org/download.html
+#   Or use: choco install ffmpeg
+#   Or use: scoop install ffmpeg
+#
+# macOS:
+#   brew install ffmpeg
+#
+# Linux (Ubuntu/Debian):
+#   sudo apt update && sudo apt install ffmpeg
+#
+# Linux (Fedora):
+#   sudo dnf install ffmpeg
+#
+# Linux (Arch):
+#   sudo pacman -S ffmpeg
