@@ -214,7 +214,7 @@ def main():
     # Sidebar
     with st.sidebar:
         st.image("https://via.placeholder.com/300x100/667eea/ffffff?text=Video+Studio",
-                 use_column_width=True)
+                 use_container_width=True)
 
         st.markdown("---")
 

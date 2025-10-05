@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-YouTube Video Downloader - Профессиональный загрузчик видео с YouTube.
+YouTube Video Downloader - Загрузчик видео с YouTube в МАКСИМАЛЬНОМ качестве (до 4K).
 
-Возможности:
-- Выбор качества видео (от 144p до 8K)
-- Загрузка плейлистов
-- Субтитры и метаданные
-- Возобновление прерванных загрузок
-- Пакетная обработка URL
-- Ограничение скорости
-- Поддержка cookies для приватных видео
-- Подробное логирование и статистика
+ГАРАНТИЯ максимального качества:
+- Скачивание в наивысшем доступном разрешении (2160p, 1440p, 1080p и т.д.)
+- Сохранение оригинального качества БЕЗ перекодирования
+- Автоматическое объединение видео + аудио
+- Конвертация в MP4 только при необходимости (без потери качества)
+- Реальное разрешение в названии файла
 """
 
 import json
 import logging
 import re
-import sys
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 
 import yt_dlp
 from yt_dlp.utils import DownloadError, ExtractorError
@@ -51,19 +48,8 @@ YOUTUBE_DOMAINS = {
     'youtube-nocookie.com',
 }
 
-QUALITY_PRESETS = {
-    'best': 'bestvideo+bestaudio/best',
-    '4320p': 'bestvideo[height<=4320]+bestaudio/best',  # 8K
-    '2160p': 'bestvideo[height<=2160]+bestaudio/best',  # 4K
-    '1440p': 'bestvideo[height<=1440]+bestaudio/best',  # 2K
-    '1080p': 'bestvideo[height<=1080]+bestaudio/best',  # Full HD
-    '720p': 'bestvideo[height<=720]+bestaudio/best',    # HD
-    '480p': 'bestvideo[height<=480]+bestaudio/best',
-    '360p': 'bestvideo[height<=360]+bestaudio/best',
-    '240p': 'bestvideo[height<=240]+bestaudio/best',
-    '144p': 'bestvideo[height<=144]+bestaudio/best',
-    'audio': 'bestaudio/best',  # Только аудио
-}
+# Максимальное разрешение - 4K (2160p)
+MAX_RESOLUTION = 2160
 
 
 # ============================================================================
@@ -72,95 +58,70 @@ QUALITY_PRESETS = {
 
 @dataclass
 class DownloadConfig:
-    """Конфигурация загрузки."""
-
-    # Качество
-    quality: str = '1080p'  # Может быть preset или custom format string
-    format_preference: str = 'mp4'  # Предпочитаемый формат
+    """Конфигурация загрузки YouTube видео."""
 
     # Пути
-    output_dir: Optional[Path] = None
-    output_template: str = '%(title)s.%(ext)s'  # Шаблон имени файла
-
-    # Субтитры и метаданные
-    write_subtitles: bool = False
-    write_auto_subtitles: bool = False
-    subtitle_language: str = 'en,ru'  # Языки субтитров
-    write_description: bool = False
-    write_info_json: bool = False
-    write_thumbnail: bool = False
-    embed_thumbnail: bool = False
-    embed_metadata: bool = True
+    output_dir: Path
 
     # Плейлисты
     download_playlist: bool = False
     playlist_start: int = 1
     playlist_end: Optional[int] = None
-    playlist_items: Optional[str] = None  # Например: "1,2,5-7"
+    playlist_items: Optional[str] = None
 
     # Производительность
-    concurrent_fragments: int = 4
-    rate_limit: Optional[str] = None  # Например: "1M" для 1 MB/s
+    concurrent_fragments: int = 8
+    rate_limit: Optional[str] = None
     retries: int = 10
-    fragment_retries: int = 10
 
     # Дополнительно
     cookies_file: Optional[Path] = None
     proxy: Optional[str] = None
-    geo_bypass: bool = True
-    age_limit: Optional[int] = None
 
     # Поведение
     overwrite: bool = False
     continue_download: bool = True
-    keep_video: bool = True  # Сохранять видео после обработки
 
-    def validate(self):
-        """Валидация конфигурации."""
-        # Проверяем качество
-        if self.quality not in QUALITY_PRESETS and not self.quality.startswith('bestvideo'):
-            logger.warning(
-                f"Неизвестный preset качества: {self.quality}. "
-                f"Доступные: {', '.join(QUALITY_PRESETS.keys())}"
+    def __post_init__(self):
+        """Валидация после инициализации."""
+        self.output_dir = Path(self.output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        if self.cookies_file:
+            self.cookies_file = Path(self.cookies_file)
+            if not self.cookies_file.exists():
+                raise FileNotFoundError(
+                    f"Cookies файл не найден: {self.cookies_file}")
+
+        if self.rate_limit and not re.match(r'^\d+[KMG]?$', self.rate_limit, re.IGNORECASE):
+            raise ValueError(
+                f"Неверный формат rate_limit: {self.rate_limit}. "
+                f"Примеры: '1M', '500K', '100000'"
             )
 
-        # Проверяем cookies
-        if self.cookies_file and not self.cookies_file.exists():
-            raise FileNotFoundError(
-                f"Cookies файл не найден: {self.cookies_file}")
+    def get_ydl_opts(self) -> Dict[str, Any]:
+        """Создает параметры для yt-dlp с МАКСИМАЛЬНЫМ качеством."""
 
-        # Проверяем rate limit формат
-        if self.rate_limit:
-            if not re.match(r'^\d+[KMG]?$', self.rate_limit, re.IGNORECASE):
-                raise ValueError(
-                    f"Неверный формат rate_limit: {self.rate_limit}. "
-                    f"Примеры: '1M', '500K', '100000'"
-                )
+        # КРИТИЧНО ВАЖНО: Правильный format selector для максимального качества
+        # bv* = best video (любой кодек - VP9, H.264, AV1)
+        # [height<=2160] = ограничение до 4K
+        # +ba = лучшее аудио
+        # /b = fallback на объединенные форматы
+        format_string = 'bv*[height<=2160]+ba/b[height<=2160]/bv*+ba/b'
 
-    def get_format_string(self) -> str:
-        """Получает строку формата для yt-dlp."""
-        if self.quality in QUALITY_PRESETS:
-            return QUALITY_PRESETS[self.quality]
-        return self.quality
+        # Шаблон имени: добавим разрешение ПОСЛЕ загрузки через postprocessor
+        output_template = str(self.output_dir / '%(title)s.%(ext)s')
 
-    def to_ydl_opts(self) -> Dict[str, Any]:
-        """Преобразует конфигурацию в параметры для yt-dlp."""
         opts = {
-            'format': self.get_format_string(),
-            'merge_output_format': self.format_preference,
-            'outtmpl': str(self.output_dir / self.output_template) if self.output_dir else self.output_template,
+            # ФОРМАТ: максимальное качество до 4K
+            'format': format_string,
 
-            # Субтитры
-            'writesubtitles': self.write_subtitles,
-            'writeautomaticsub': self.write_auto_subtitles,
-            'subtitleslangs': self.subtitle_language.split(',') if self.subtitle_language else [],
+            # Выходной формат - MP4 (слияние без перекодирования где возможно)
+            'merge_output_format': 'mp4',
 
-            # Метаданные
-            'writedescription': self.write_description,
-            'writeinfojson': self.write_info_json,
-            'writethumbnail': self.write_thumbnail,
-            'embedthumbnail': self.embed_thumbnail,
-            'addmetadata': self.embed_metadata,
+            # Имя файла
+            'outtmpl': output_template,
+            'restrictfilenames': False,
 
             # Плейлисты
             'noplaylist': not self.download_playlist,
@@ -171,19 +132,25 @@ class DownloadConfig:
             # Производительность
             'concurrent_fragment_downloads': self.concurrent_fragments,
             'retries': self.retries,
-            'fragment_retries': self.fragment_retries,
+            'fragment_retries': self.retries,
 
             # Поведение
             'overwrites': self.overwrite,
             'continuedl': self.continue_download,
-            'keepvideo': self.keep_video,
-            'geo_bypass': self.geo_bypass,
+            'keepvideo': False,  # Удалять промежуточные файлы после слияния
+            'geo_bypass': True,
 
-            # Прочее
+            # Безопасность
             'nocheckcertificate': False,
+
+            # FFmpeg - только для слияния, НЕ для перекодирования
             'prefer_ffmpeg': True,
+            'postprocessors': [],  # БЕЗ постобработки которая пережимает видео
+
+            # Вывод
             'quiet': False,
             'no_warnings': False,
+            'verbose': False,
         }
 
         # Опциональные параметры
@@ -196,14 +163,11 @@ class DownloadConfig:
         if self.proxy:
             opts['proxy'] = self.proxy
 
-        if self.age_limit is not None:
-            opts['age_limit'] = self.age_limit
-
         return opts
 
     @staticmethod
     def _parse_rate_limit(rate_str: str) -> int:
-        """Парсит строку rate limit в байты в секунду."""
+        """Конвертирует строку rate limit в байты/сек."""
         rate_str = rate_str.upper()
         multipliers = {'K': 1024, 'M': 1024**2, 'G': 1024**3}
 
@@ -215,46 +179,53 @@ class DownloadConfig:
         return int(rate_str)
 
 
+# ============================================================================
+# МОДЕЛИ ДАННЫХ
+# ============================================================================
+
 @dataclass
 class VideoInfo:
     """Информация о видео."""
+
     id: str
     title: str
     url: str
+    resolution: str  # "1920x1080"
+    resolution_label: str  # "1080p"
+    fps: Optional[float] = None
     duration: Optional[float] = None
     uploader: Optional[str] = None
     upload_date: Optional[str] = None
     view_count: Optional[int] = None
-    like_count: Optional[int] = None
-    description: Optional[str] = None
-    thumbnail: Optional[str] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-    fps: Optional[float] = None
     filesize: Optional[int] = None
+    thumbnail: Optional[str] = None
 
     @classmethod
     def from_ydl_info(cls, info: Dict[str, Any]) -> 'VideoInfo':
-        """Создаёт VideoInfo из словаря yt-dlp."""
+        """Создает VideoInfo из данных yt-dlp."""
+        width = info.get('width', 0)
+        height = info.get('height', 0)
+
+        resolution = f"{width}x{height}" if width and height else "Unknown"
+        resolution_label = f"{height}p" if height else "Unknown"
+
         return cls(
             id=info.get('id', ''),
             title=info.get('title', 'Unknown'),
             url=info.get('webpage_url', ''),
+            resolution=resolution,
+            resolution_label=resolution_label,
+            fps=info.get('fps'),
             duration=info.get('duration'),
             uploader=info.get('uploader'),
             upload_date=info.get('upload_date'),
             view_count=info.get('view_count'),
-            like_count=info.get('like_count'),
-            description=info.get('description'),
-            thumbnail=info.get('thumbnail'),
-            width=info.get('width'),
-            height=info.get('height'),
-            fps=info.get('fps'),
             filesize=info.get('filesize') or info.get('filesize_approx'),
+            thumbnail=info.get('thumbnail'),
         )
 
     def format_duration(self) -> str:
-        """Форматирует длительность."""
+        """Форматирует длительность в читаемый вид."""
         if self.duration is None:
             return "Unknown"
 
@@ -272,50 +243,41 @@ class VideoInfo:
         if self.filesize is None:
             return "Unknown"
 
+        size = float(self.filesize)
         for unit in ['B', 'KB', 'MB', 'GB']:
-            if self.filesize < 1024:
-                return f"{self.filesize:.1f} {unit}"
-            self.filesize /= 1024
-
-        return f"{self.filesize:.1f} TB"
-
-    def to_dict(self) -> dict:
-        """Преобразование в словарь."""
-        return {
-            'id': self.id,
-            'title': self.title,
-            'url': self.url,
-            'duration': self.duration,
-            'duration_formatted': self.format_duration(),
-            'uploader': self.uploader,
-            'upload_date': self.upload_date,
-            'view_count': self.view_count,
-            'like_count': self.like_count,
-            'resolution': f"{self.width}x{self.height}" if self.width and self.height else None,
-            'fps': self.fps,
-            'filesize': self.filesize,
-            'filesize_formatted': self.format_filesize(),
-        }
+            if size < 1024.0:
+                return f"{size:.1f} {unit}"
+            size /= 1024.0
+        return f"{size:.1f} TB"
 
 
 @dataclass
 class DownloadResult:
     """Результат загрузки."""
+
     url: str
     success: bool
     message: str
     video_info: Optional[VideoInfo] = None
     output_path: Optional[Path] = None
+    # Реальное разрешение скачанного видео
+    actual_resolution: Optional[str] = None
     download_time: float = 0.0
     error: Optional[str] = None
 
-    def to_dict(self) -> dict:
-        """Преобразование в словарь."""
+    def to_dict(self) -> Dict[str, Any]:
+        """Преобразует в словарь."""
         return {
             'url': self.url,
             'success': self.success,
             'message': self.message,
-            'video_info': self.video_info.to_dict() if self.video_info else None,
+            'video_info': {
+                'title': self.video_info.title,
+                'available_resolution': self.video_info.resolution_label,
+                'downloaded_resolution': self.actual_resolution or self.video_info.resolution_label,
+                'duration': self.video_info.format_duration(),
+                'uploader': self.video_info.uploader,
+            } if self.video_info else None,
             'output_path': str(self.output_path) if self.output_path else None,
             'download_time': round(self.download_time, 2),
             'error': self.error,
@@ -327,38 +289,17 @@ class DownloadResult:
 # ============================================================================
 
 def validate_youtube_url(url: str) -> bool:
-    """
-    Проверяет, является ли URL ссылкой на YouTube.
-
-    Args:
-        url: URL для проверки
-
-    Returns:
-        bool: True если это YouTube URL
-    """
+    """Проверяет, является ли URL ссылкой на YouTube."""
     try:
         parsed = urlparse(url)
-        domain = parsed.netloc.lower()
-
-        # Удаляем www. если есть
-        domain = domain.replace('www.', '')
-
+        domain = parsed.netloc.lower().replace('www.', '')
         return domain in YOUTUBE_DOMAINS
     except Exception:
         return False
 
 
 def extract_video_id(url: str) -> Optional[str]:
-    """
-    Извлекает ID видео из YouTube URL.
-
-    Args:
-        url: YouTube URL
-
-    Returns:
-        Optional[str]: ID видео или None
-    """
-    # Паттерны для разных форматов URL
+    """Извлекает ID видео из YouTube URL."""
     patterns = [
         r'(?:v=|\/)([0-9A-Za-z_-]{11}).*',
         r'(?:embed\/)([0-9A-Za-z_-]{11})',
@@ -373,13 +314,13 @@ def extract_video_id(url: str) -> Optional[str]:
     return None
 
 
-def format_bytes(bytes_value: int) -> str:
+def format_bytes(bytes_value: float) -> str:
     """Форматирует байты в читаемый вид."""
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+    for unit in ['B', 'KB', 'MB', 'GB']:
         if bytes_value < 1024.0:
             return f"{bytes_value:.1f} {unit}"
         bytes_value /= 1024.0
-    return f"{bytes_value:.1f} PB"
+    return f"{bytes_value:.1f} TB"
 
 
 def format_time(seconds: float) -> str:
@@ -398,50 +339,100 @@ def format_time(seconds: float) -> str:
     return f"{hours}h {minutes}m {secs}s"
 
 
+def get_video_resolution_from_file(file_path: Path) -> Optional[str]:
+    """
+    Извлекает РЕАЛЬНОЕ разрешение из скачанного видео файла используя FFprobe.
+
+    Args:
+        file_path: Путь к видео файлу
+
+    Returns:
+        Строка с разрешением (например, "2160p") или None
+    """
+    try:
+        import subprocess
+
+        cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=height',
+            '-of', 'csv=p=0',
+            str(file_path)
+        ]
+
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=10)
+
+        if result.returncode == 0 and result.stdout.strip():
+            height = int(result.stdout.strip())
+            return f"{height}p"
+    except Exception as e:
+        logger.warning(f"Не удалось определить разрешение из файла: {e}")
+
+    return None
+
+
 # ============================================================================
-# PROGRESS HOOKS
+# PROGRESS TRACKER
 # ============================================================================
 
 class ProgressTracker:
-    """Отслеживает прогресс загрузки."""
+    """Отслеживает и отображает прогресс загрузки."""
 
     def __init__(self, title: str = ""):
         self.title = title
         self.status = 'idle'
         self.downloaded_bytes = 0
         self.total_bytes = 0
-        self.speed = 0
+        self.speed = 0.0
         self.eta = 0
 
     def __call__(self, d: Dict[str, Any]):
-        """Hook для yt-dlp."""
+        """Callback для yt-dlp."""
         self.status = d.get('status', 'unknown')
 
         if self.status == 'downloading':
-            self.downloaded_bytes = d.get('downloaded_bytes', 0)
-            self.total_bytes = d.get('total_bytes') or d.get(
-                'total_bytes_estimate', 0)
-            self.speed = d.get('speed', 0)
-            self.eta = d.get('eta', 0)
+            # Безопасное получение значений с проверкой на None
+            self.downloaded_bytes = int(d.get('downloaded_bytes') or 0)
 
-            # Форматируем вывод
-            percent = (self.downloaded_bytes / self.total_bytes *
-                       100) if self.total_bytes > 0 else 0
+            total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+            self.total_bytes = int(total)
+
+            speed = d.get('speed')
+            self.speed = float(speed) if speed is not None else 0.0
+
+            eta = d.get('eta')
+            self.eta = int(eta) if eta is not None else 0
+
+            # Вычисление процента
+            if self.total_bytes > 0:
+                percent = (self.downloaded_bytes / self.total_bytes) * 100
+            else:
+                # Для HLS/DASH потоков используем фрагменты
+                fragment_index = d.get('fragment_index')
+                fragment_count = d.get('fragment_count')
+
+                if isinstance(fragment_index, int) and isinstance(fragment_count, int) and fragment_count > 0:
+                    percent = ((fragment_index + 1) / fragment_count) * 100
+                else:
+                    percent = 0.0
+
             downloaded = format_bytes(self.downloaded_bytes)
-            total = format_bytes(
+            total_str = format_bytes(
                 self.total_bytes) if self.total_bytes > 0 else "Unknown"
             speed_str = f"{format_bytes(self.speed)}/s" if self.speed > 0 else "N/A"
             eta_str = format_time(self.eta) if self.eta > 0 else "N/A"
 
             print(
-                f"\r📥 {percent:.1f}% | {downloaded}/{total} | "
+                f"\r📥 {percent:.1f}% | {downloaded}/{total_str} | "
                 f"⚡ {speed_str} | ⏱️  ETA: {eta_str}",
                 end='',
                 flush=True
             )
 
         elif self.status == 'finished':
-            print("\n✅ Загрузка завершена, обработка файла...")
+            print("\n✅ Загрузка завершена, обработка...")
 
         elif self.status == 'error':
             print("\n❌ Ошибка загрузки")
@@ -452,24 +443,16 @@ class ProgressTracker:
 # ============================================================================
 
 class YouTubeDownloader:
-    """Профессиональный загрузчик YouTube видео."""
+    """Загрузчик видео с YouTube в МАКСИМАЛЬНОМ качестве (до 4K)."""
 
-    def __init__(self, config: Optional[DownloadConfig] = None):
+    def __init__(self, config: DownloadConfig):
         """
         Инициализация загрузчика.
 
         Args:
             config: Конфигурация загрузки
         """
-        self.config = config or DownloadConfig()
-        self.config.validate()
-
-        # Устанавливаем output_dir по умолчанию
-        if self.config.output_dir is None:
-            script_dir = Path(__file__).resolve().parent
-            self.config.output_dir = script_dir.parent / 'assets' / 'downloads'
-
-        self.config.output_dir.mkdir(parents=True, exist_ok=True)
+        self.config = config
 
     def get_video_info(self, url: str) -> Optional[VideoInfo]:
         """
@@ -479,7 +462,7 @@ class YouTubeDownloader:
             url: URL видео
 
         Returns:
-            Optional[VideoInfo]: Информация о видео или None
+            VideoInfo или None в случае ошибки
         """
         ydl_opts = {
             'quiet': True,
@@ -490,10 +473,55 @@ class YouTubeDownloader:
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
-                return VideoInfo.from_ydl_info(info)
+                if info:
+                    return VideoInfo.from_ydl_info(info)
         except Exception as e:
-            logger.error(f"Не удалось получить информацию о видео: {e}")
-            return None
+            logger.error(f"Ошибка получения информации: {e}")
+
+        return None
+
+    def list_available_formats(self, url: str):
+        """
+        Выводит список доступных форматов для отладки.
+
+        Args:
+            url: URL видео
+        """
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'listformats': True,
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+
+                if 'formats' in info:
+                    logger.info("📋 Доступные форматы:")
+
+                    # Фильтруем только видео форматы
+                    video_formats = [
+                        f for f in info['formats']
+                        if f.get('vcodec') != 'none' and f.get('height')
+                    ]
+
+                    # Сортируем по высоте
+                    video_formats.sort(key=lambda x: x.get(
+                        'height', 0), reverse=True)
+
+                    for fmt in video_formats[:10]:  # Топ 10
+                        height = fmt.get('height', 0)
+                        fps = fmt.get('fps', 0)
+                        vcodec = fmt.get('vcodec', 'unknown')
+                        ext = fmt.get('ext', 'unknown')
+                        format_id = fmt.get('format_id', 'unknown')
+
+                        logger.info(
+                            f"   [{format_id}] {height}p{fps} {vcodec} ({ext})"
+                        )
+        except Exception as e:
+            logger.error(f"Ошибка получения форматов: {e}")
 
     def download(
         self,
@@ -501,16 +529,15 @@ class YouTubeDownloader:
         progress_callback: Optional[Callable] = None
     ) -> DownloadResult:
         """
-        Загружает видео с YouTube.
+        Загружает видео с YouTube в МАКСИМАЛЬНОМ качестве (до 4K).
 
         Args:
             url: URL видео
             progress_callback: Callback для отслеживания прогресса
 
         Returns:
-            DownloadResult: Результат загрузки
+            DownloadResult с результатом загрузки
         """
-        import time
         start_time = time.time()
 
         # Валидация URL
@@ -523,8 +550,8 @@ class YouTubeDownloader:
             )
 
         try:
-            # Получаем информацию о видео
-            logger.info(f"📹 Получаю информацию о видео...")
+            # Получение информации о видео
+            logger.info(f"📹 Получение информации о видео...")
             video_info = self.get_video_info(url)
 
             if video_info is None:
@@ -535,82 +562,88 @@ class YouTubeDownloader:
                     error="Failed to extract video info"
                 )
 
+            # Вывод информации
             logger.info(f"📺 Название: {video_info.title}")
             logger.info(f"   ├─ Автор: {video_info.uploader or 'Unknown'}")
+            logger.info(
+                f"   ├─ Макс. разрешение: {video_info.resolution_label}")
             logger.info(f"   ├─ Длительность: {video_info.format_duration()}")
-            if video_info.width and video_info.height:
-                logger.info(
-                    f"   ├─ Разрешение: {video_info.width}x{video_info.height}")
-            if video_info.view_count:
-                logger.info(f"   ├─ Просмотров: {video_info.view_count:,}")
             logger.info(f"   └─ Размер: ~{video_info.format_filesize()}")
 
-            # Настройка yt-dlp
-            ydl_opts = self.config.to_ydl_opts()
+            # Показываем доступные форматы
+            logger.info("")
+            self.list_available_formats(url)
 
-            # Добавляем progress hook
+            # Настройка yt-dlp
+            ydl_opts = self.config.get_ydl_opts()
+
+            # Progress hook
             if progress_callback is None:
                 progress_callback = ProgressTracker(video_info.title)
 
             ydl_opts['progress_hooks'] = [progress_callback]
 
-            # Логирование параметров
             logger.info("")
             logger.info(f"⚙️  Параметры загрузки:")
-            logger.info(f"   ├─ Качество: {self.config.quality}")
-            logger.info(f"   ├─ Формат: {self.config.format_preference}")
+            logger.info(f"   ├─ Формат: МАКСИМАЛЬНОЕ качество до 4K (2160p)")
+            logger.info(f"   ├─ Выход: MP4 (без потери качества)")
             logger.info(f"   ├─ Папка: {self.config.output_dir}")
-            if self.config.write_subtitles or self.config.write_auto_subtitles:
-                logger.info(
-                    f"   ├─ Субтитры: да ({self.config.subtitle_language})")
             if self.config.rate_limit:
                 logger.info(
-                    f"   ├─ Ограничение скорости: {self.config.rate_limit}")
-            logger.info(
-                f"   └─ Продолжить при обрыве: {'да' if self.config.continue_download else 'нет'}")
+                    f"   └─ Ограничение скорости: {self.config.rate_limit}")
 
             logger.info("")
-            logger.info("🚀 Начинаю загрузку...")
+            logger.info("🚀 Начало загрузки в МАКСИМАЛЬНОМ качестве...")
 
             # Загрузка
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
 
-                # Определяем путь к загруженному файлу
-                if 'requested_downloads' in info and info['requested_downloads']:
-                    output_path = Path(
-                        info['requested_downloads'][0]['filepath'])
-                else:
-                    # Пытаемся предсказать путь
-                    filename = ydl.prepare_filename(info)
-                    output_path = Path(filename)
-
-                if not output_path.exists():
-                    # Ищем файл по паттерну
-                    pattern = f"{video_info.title}.*"
-                    matches = list(self.config.output_dir.glob(pattern))
-                    if matches:
-                        output_path = matches[0]
+                # Определение пути к файлу
+                output_path = self._find_output_file(info, ydl)
 
             download_time = time.time() - start_time
 
-            logger.info("")
-            logger.info(
-                f"✅ Загрузка завершена за {format_time(download_time)}")
-            logger.info(f"📁 Файл: {output_path}")
+            if output_path and output_path.exists():
+                # Определяем РЕАЛЬНОЕ разрешение из файла
+                actual_resolution = get_video_resolution_from_file(output_path)
 
-            if output_path.exists():
+                if actual_resolution:
+                    logger.info(
+                        f"✓ Фактическое разрешение: {actual_resolution}")
+
+                    # Переименовываем файл с правильным разрешением
+                    new_name = f"{output_path.stem}_{actual_resolution}{output_path.suffix}"
+                    new_path = output_path.parent / new_name
+
+                    try:
+                        output_path.rename(new_path)
+                        output_path = new_path
+                        logger.info(f"✓ Файл переименован: {new_path.name}")
+                    except Exception as e:
+                        logger.warning(f"Не удалось переименовать файл: {e}")
+                else:
+                    actual_resolution = video_info.resolution_label
+
                 file_size = output_path.stat().st_size
+                logger.info("")
+                logger.info(
+                    f"✅ Загрузка завершена за {format_time(download_time)}")
+                logger.info(f"📁 Файл: {output_path.name}")
                 logger.info(f"💾 Размер: {format_bytes(file_size)}")
+                logger.info(f"🎬 Разрешение: {actual_resolution}")
 
-            return DownloadResult(
-                url=url,
-                success=True,
-                message=f"✅ {video_info.title}",
-                video_info=video_info,
-                output_path=output_path,
-                download_time=download_time
-            )
+                return DownloadResult(
+                    url=url,
+                    success=True,
+                    message=f"✅ {video_info.title} ({actual_resolution})",
+                    video_info=video_info,
+                    output_path=output_path,
+                    actual_resolution=actual_resolution,
+                    download_time=download_time
+                )
+            else:
+                raise FileNotFoundError("Загруженный файл не найден")
 
         except DownloadError as e:
             return DownloadResult(
@@ -625,7 +658,7 @@ class YouTubeDownloader:
             return DownloadResult(
                 url=url,
                 success=False,
-                message=f"❌ Ошибка извлечения данных: {str(e)}",
+                message=f"❌ Ошибка извлечения: {str(e)}",
                 error=str(e),
                 download_time=time.time() - start_time
             )
@@ -635,7 +668,7 @@ class YouTubeDownloader:
             return DownloadResult(
                 url=url,
                 success=False,
-                message=f"❌ Неожиданная ошибка: {str(e)}",
+                message=f"❌ Ошибка: {str(e)}",
                 error=str(e),
                 download_time=time.time() - start_time
             )
@@ -649,14 +682,14 @@ class YouTubeDownloader:
         Загружает несколько видео.
 
         Args:
-            urls: Список URL для загрузки
-            save_report: Сохранить отчёт в JSON
+            urls: Список URL
+            save_report: Сохранить отчет в JSON
 
         Returns:
-            Dict: Статистика загрузок
+            Словарь со статистикой
         """
         logger.info("=" * 70)
-        logger.info(f"🎬 ПАКЕТНАЯ ЗАГРУЗКА ВИДЕО ({len(urls)} шт.)")
+        logger.info(f"🎬 ПАКЕТНАЯ ЗАГРУЗКА ({len(urls)} видео)")
         logger.info("=" * 70)
         logger.info("")
 
@@ -684,12 +717,23 @@ class YouTubeDownloader:
         logger.info(f"✅ Успешно: {success}")
         logger.info(f"❌ Ошибок: {failed}")
         logger.info(f"⏱️  Общее время: {format_time(total_time)}")
+
+        # Показываем разрешения скачанных видео
+        if success > 0:
+            logger.info("")
+            logger.info("🎬 Скачанные разрешения:")
+            for r in results:
+                if r.success and r.actual_resolution:
+                    logger.info(
+                        f"   • {r.actual_resolution} - {r.video_info.title[:50]}")
+
         logger.info("=" * 70)
 
-        # Сохраняем отчёт
+        # Сохранение отчета
         if save_report and results:
             report_path = self.config.output_dir / \
                 f"download_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
             report = {
                 'timestamp': datetime.now().isoformat(),
                 'total': total,
@@ -702,7 +746,7 @@ class YouTubeDownloader:
             with open(report_path, 'w', encoding='utf-8') as f:
                 json.dump(report, f, indent=2, ensure_ascii=False)
 
-            logger.info(f"📄 Отчёт сохранён: {report_path}")
+            logger.info(f"📄 Отчет сохранен: {report_path}")
 
         return {
             'total': total,
@@ -711,240 +755,98 @@ class YouTubeDownloader:
             'results': results
         }
 
+    def _find_output_file(self, info: Dict[str, Any], ydl) -> Optional[Path]:
+        """Находит загруженный файл."""
+        # Способ 1: из requested_downloads
+        if 'requested_downloads' in info and info['requested_downloads']:
+            filepath = info['requested_downloads'][0].get('filepath')
+            if filepath:
+                path = Path(filepath)
+                if path.exists():
+                    return path
+
+        # Способ 2: prepare_filename
+        filename = ydl.prepare_filename(info)
+        path = Path(filename)
+
+        # Проверка с расширением .mp4
+        if not path.exists() and path.suffix != '.mp4':
+            path = path.with_suffix('.mp4')
+
+        if path.exists():
+            return path
+
+        # Способ 3: поиск по паттерну (последний созданный MP4)
+        title = info.get('title', '')
+
+        if title:
+            # Ищем все MP4 файлы с этим названием
+            mp4_files = list(self.config.output_dir.glob("*.mp4"))
+
+            if mp4_files:
+                # Возвращаем самый свежий
+                return max(mp4_files, key=lambda p: p.stat().st_mtime)
+
+        return None
+
 
 # ============================================================================
-# CLI
+# CLI (для тестирования)
 # ============================================================================
 
 def main():
-    """Главная функция для CLI."""
+    """CLI для тестирования."""
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='YouTube Video Downloader - Профессиональный загрузчик',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Примеры использования:
-  %(prog)s "https://www.youtube.com/watch?v=..."
-  %(prog)s URL -q 4K -o ~/Videos
-  %(prog)s URL --quality audio -f m4a
-  %(prog)s URL --subtitles --subtitle-lang "en,ru"
-  %(prog)s URL --playlist --playlist-items "1-5,8,10"
-  %(prog)s -f urls.txt --batch
-        """
+        description='YouTube Video Downloader - МАКСИМАЛЬНОЕ качество до 4K'
     )
 
-    # URL
-    parser.add_argument(
-        'url',
-        nargs='?',
-        help='YouTube URL (или -f для пакетной загрузки)'
-    )
-
-    # Основные параметры
-    main_group = parser.add_argument_group('Основные параметры')
-    main_group.add_argument(
-        '-q', '--quality',
-        default='1080p',
-        help=f'Качество видео ({", ".join(QUALITY_PRESETS.keys())})'
-    )
-    main_group.add_argument(
-        '-f', '--format',
-        default='mp4',
-        help='Формат файла (mp4, mkv, webm, ...)'
-    )
-    main_group.add_argument(
-        '-o', '--output',
-        type=Path,
-        help='Выходная директория'
-    )
-
-    # Субтитры и метаданные
-    meta_group = parser.add_argument_group('Субтитры и метаданные')
-    meta_group.add_argument(
-        '--subtitles',
-        action='store_true',
-        help='Скачать субтитры'
-    )
-    meta_group.add_argument(
-        '--auto-subtitles',
-        action='store_true',
-        help='Скачать автоматические субтитры'
-    )
-    meta_group.add_argument(
-        '--subtitle-lang',
-        default='en,ru',
-        help='Языки субтитров (через запятую)'
-    )
-    meta_group.add_argument(
-        '--thumbnail',
-        action='store_true',
-        help='Скачать миниатюру'
-    )
-    meta_group.add_argument(
-        '--description',
-        action='store_true',
-        help='Сохранить описание'
-    )
-    meta_group.add_argument(
-        '--info-json',
-        action='store_true',
-        help='Сохранить JSON с метаданными'
-    )
-
-    # Плейлисты
-    playlist_group = parser.add_argument_group('Плейлисты')
-    playlist_group.add_argument(
-        '--playlist',
-        action='store_true',
-        help='Загрузить весь плейлист'
-    )
-    playlist_group.add_argument(
-        '--playlist-start',
-        type=int,
-        default=1,
-        help='Начать с видео N'
-    )
-    playlist_group.add_argument(
-        '--playlist-end',
-        type=int,
-        help='Закончить на видео N'
-    )
-    playlist_group.add_argument(
-        '--playlist-items',
-        help='Номера видео (например: "1,2,5-7")'
-    )
-
-    # Производительность
-    perf_group = parser.add_argument_group('Производительность')
-    perf_group.add_argument(
-        '--rate-limit',
-        help='Ограничение скорости (например: 1M, 500K)'
-    )
-    perf_group.add_argument(
-        '--concurrent-fragments',
-        type=int,
-        default=4,
-        help='Количество одновременно загружаемых фрагментов'
-    )
-
-    # Дополнительно
-    misc_group = parser.add_argument_group('Дополнительно')
-    misc_group.add_argument(
-        '--cookies',
-        type=Path,
-        help='Файл cookies для авторизации'
-    )
-    misc_group.add_argument(
-        '--proxy',
-        help='Прокси сервер'
-    )
-    misc_group.add_argument(
-        '--batch',
-        type=Path,
-        help='Файл со списком URL (по одному на строку)'
-    )
-    misc_group.add_argument(
-        '--info-only',
-        action='store_true',
-        help='Только получить информацию, не загружать'
-    )
-    misc_group.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Подробный вывод'
-    )
+    parser.add_argument('url', help='YouTube URL')
+    parser.add_argument('-o', '--output', type=Path,
+                        help='Выходная директория')
+    parser.add_argument('--playlist', action='store_true',
+                        help='Загрузить плейлист')
+    parser.add_argument('--rate-limit', help='Ограничение скорости (1M, 500K)')
+    parser.add_argument('--proxy', help='Прокси сервер')
+    parser.add_argument('--cookies', type=Path, help='Файл cookies')
+    parser.add_argument('--list-formats', action='store_true',
+                        help='Показать доступные форматы')
 
     args = parser.parse_args()
 
-    # Настройка логирования
-    if args.verbose:
-        logger.setLevel(logging.DEBUG)
-
-    # Проверка URL
-    if not args.url and not args.batch:
-        # Интерактивный режим
-        print("=" * 70)
-        print("YouTube Video Downloader")
-        print("=" * 70)
-        print()
-        url = input("Введите YouTube URL: ").strip()
-        if not url:
-            print("❌ URL не может быть пустым")
-            return 1
-    elif args.batch:
-        # Пакетная загрузка из файла
-        if not args.batch.exists():
-            print(f"❌ Файл не найден: {args.batch}")
-            return 1
-
-        urls = []
-        with open(args.batch, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    urls.append(line)
-
-        if not urls:
-            print("❌ В файле нет URL")
-            return 1
-    else:
-        url = args.url
-        urls = None
-
     try:
         # Создание конфигурации
+        output_dir = args.output or Path('assets/downloads')
+
         config = DownloadConfig(
-            quality=args.quality,
-            format_preference=args.format,
-            output_dir=args.output,
-            write_subtitles=args.subtitles,
-            write_auto_subtitles=args.auto_subtitles,
-            subtitle_language=args.subtitle_lang,
-            write_description=args.description,
-            write_info_json=args.info_json,
-            write_thumbnail=args.thumbnail,
+            output_dir=output_dir,
             download_playlist=args.playlist,
-            playlist_start=args.playlist_start,
-            playlist_end=args.playlist_end,
-            playlist_items=args.playlist_items,
-            concurrent_fragments=args.concurrent_fragments,
             rate_limit=args.rate_limit,
-            cookies_file=args.cookies,
             proxy=args.proxy,
+            cookies_file=args.cookies,
         )
 
-        # Создание загрузчика
+        # Загрузка
         downloader = YouTubeDownloader(config)
 
-        # Режим только информации
-        if args.info_only:
-            video_info = downloader.get_video_info(
-                url if not urls else urls[0])
-            if video_info:
-                print(json.dumps(video_info.to_dict(),
-                      indent=2, ensure_ascii=False))
+        if args.list_formats:
+            downloader.list_available_formats(args.url)
             return 0
 
-        # Загрузка
-        if urls:
-            # Пакетная загрузка
-            downloader.download_multiple(urls)
-        else:
-            # Одиночная загрузка
-            downloader.download(url)
+        result = downloader.download(args.url)
 
-        return 0
+        return 0 if result.success else 1
 
     except KeyboardInterrupt:
         logger.warning("\n⚠️  Прервано пользователем")
         return 130
 
     except Exception as e:
-        logger.error(f"\n❌ Ошибка: {e}", exc_info=args.verbose if hasattr(
-            args, 'verbose') else False)
+        logger.error(f"\n❌ Ошибка: {e}", exc_info=True)
         return 1
 
 
 if __name__ == "__main__":
+    import sys
     sys.exit(main())
