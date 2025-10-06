@@ -4,9 +4,9 @@
 Пакетная конвертация видео в формат 9:16 (вертикальный).
 
 Функции:
-- Обрезка видео в формат 9:16 с выравниванием по верху
+- Обрезка видео в формат 9:16 с центрированием по ширине
 - Удаление аудиодорожки (опционально)
-- Сохранение высокого качества
+- Максимальное сохранение качества
 - Параллельная обработка нескольких файлов
 - Опциональное удаление исходников после конвертации
 - Подробное логирование и статистика
@@ -21,7 +21,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Dict, Any
 
 # ============================================================================
 # НАСТРОЙКА ЛОГИРОВАНИЯ
@@ -57,15 +57,18 @@ TARGET_ASPECT_RATIO = 9 / 16  # ширина / высота
 class ConversionConfig:
     """Конфигурация параметров конвертации."""
 
-    # Параметры видео
+    # Параметры видео (оптимизированы для максимального качества)
     video_codec: str = 'libx264'
-    preset: str = 'medium'  # ultrafast, fast, medium, slow, veryslow
-    # 0-51, меньше = лучше качество (0=lossless, 18-23=визуально lossless)
-    crf: int = 18
+    preset: str = 'slow'  # slow обеспечивает отличное качество
+    crf: int = 17  # 17 = почти визуально lossless
     pix_fmt: str = 'yuv420p'
 
-    # Параметры обрезки
-    crop_position: str = 'top'  # top, center, bottom
+    # Дополнительные параметры кодирования для качества
+    tune: str = 'film'  # Оптимизация для высококачественного видео
+    profile: str = 'high'  # H.264 High Profile
+    level: str = '4.2'  # Уровень совместимости
+
+    # Параметры обрезки (центрирование по ширине, полная высота)
     ensure_even_dimensions: bool = True  # Чётные размеры для H.264
 
     # Параметры аудио
@@ -92,11 +95,6 @@ class ConversionConfig:
                          'fast', 'medium', 'slow', 'slower', 'veryslow'}
         if self.preset not in valid_presets:
             raise ValueError(f"preset должен быть одним из {valid_presets}")
-
-        valid_positions = {'top', 'center', 'bottom'}
-        if self.crop_position not in valid_positions:
-            raise ValueError(
-                f"crop_position должен быть одним из {valid_positions}")
 
     def to_dict(self) -> dict:
         """Преобразование в словарь."""
@@ -293,6 +291,7 @@ def get_video_metadata(video_path: Path) -> Optional[VideoMetadata]:
 def build_crop_filter(metadata: VideoMetadata, config: ConversionConfig) -> str:
     """
     Создаёт FFmpeg фильтр для обрезки в 9:16.
+    Центрирование по ширине, полная высота.
 
     Args:
         metadata: Метаданные видео
@@ -304,46 +303,38 @@ def build_crop_filter(metadata: VideoMetadata, config: ConversionConfig) -> str:
     in_w = metadata.width
     in_h = metadata.height
 
-    # Вычисляем целевую ширину для соотношения 9:16
+    # Вычисляем целевую ширину для соотношения 9:16 при текущей высоте
     target_w = in_h * 9 / 16
 
-    # Обеспечиваем чётность (H.264 требует)
-    if config.ensure_even_dimensions:
-        target_w = int(target_w)
-        if target_w % 2 != 0:
-            target_w -= 1
+    # Обеспечиваем чётность (H.264 требует чётные размеры)
+    target_w = int(target_w)
+    if config.ensure_even_dimensions and target_w % 2 != 0:
+        target_w -= 1
 
     # Если целевая ширина больше исходной - видео слишком узкое
+    # В этом случае обрезаем по высоте, сохраняя ширину
     if target_w > in_w:
-        # Обрезаем по высоте вместо ширины
-        target_h = int(in_w / 9 * 16)
+        target_w = in_w
+        if config.ensure_even_dimensions and target_w % 2 != 0:
+            target_w -= 1
+
+        # Вычисляем соответствующую высоту
+        target_h = int(target_w / 9 * 16)
         if config.ensure_even_dimensions and target_h % 2 != 0:
             target_h -= 1
 
-        # Вертикальная позиция
-        if config.crop_position == 'top':
-            y = 0
-        elif config.crop_position == 'bottom':
-            y = in_h - target_h
-        else:  # center
-            y = (in_h - target_h) // 2
+        # Центрируем по высоте
+        y = (in_h - target_h) // 2
+        x = 0
 
-        return f"crop={in_w}:{target_h}:0:{y}"
+        return f"crop={target_w}:{target_h}:{x}:{y}"
 
-    # Стандартный случай: обрезаем по ширине
-    # Горизонтальная позиция (всегда центрируем)
+    # Стандартный случай: обрезаем по ширине, сохраняем высоту
+    # Центрируем по ширине
     x = (in_w - target_w) // 2
+    y = 0  # Полная высота от верха до низа
 
-    # Вертикальная позиция
-    if config.crop_position == 'top':
-        y = 0
-    elif config.crop_position == 'bottom':
-        y = in_h - in_h  # На самом деле не меняется, так как высота не обрезается
-        y = 0  # Для стандартного случая всегда 0
-    else:  # center
-        y = 0  # Высота не меняется
-
-    return f"crop={int(target_w)}:{in_h}:{x}:{y}"
+    return f"crop={target_w}:{in_h}:{x}:{y}"
 
 
 def find_video_files(directory: Path) -> List[Path]:
@@ -447,7 +438,7 @@ def convert_single_video(
         # Строим фильтр обрезки
         crop_filter = build_crop_filter(metadata, config)
 
-        # Строим команду ffmpeg
+        # Строим команду ffmpeg с оптимизацией качества
         cmd = [
             'ffmpeg',
             '-hide_banner',
@@ -464,6 +455,9 @@ def convert_single_video(
             '-c:v', config.video_codec,
             '-preset', config.preset,
             '-crf', str(config.crf),
+            '-tune', config.tune,
+            '-profile:v', config.profile,
+            '-level', config.level,
             '-pix_fmt', config.pix_fmt,
         ])
 
@@ -474,7 +468,11 @@ def convert_single_video(
             cmd.extend(['-c:a', config.audio_codec])
             if config.audio_bitrate:
                 cmd.extend(['-b:a', config.audio_bitrate])
+        else:
+            # Копируем аудио без перекодирования
+            cmd.extend(['-c:a', 'copy'])
 
+        # Оптимизация для веб-воспроизведения
         cmd.extend([
             '-movflags', '+faststart',
             str(output_path)
@@ -518,7 +516,7 @@ def convert_single_video(
             input_path=input_path,
             output_path=output_path,
             success=True,
-            message=f"✅ {input_path.name} -> {output_path.name}{deleted_msg}",
+            message=f"✅ Успешно конвертировано{deleted_msg}",
             input_size=input_size,
             output_size=output_size,
             processing_time=processing_time
@@ -592,15 +590,17 @@ class BatchConverter:
 
         if not video_files:
             logger.warning("⚠️  Видео файлы не найдены")
-            return {'total': 0, 'success': 0, 'failed': 0, 'skipped': 0}
+            return {'total': 0, 'success': 0, 'failed': 0, 'skipped': 0, 'results': []}
 
         logger.info(f"🎥 Найдено файлов: {len(video_files)}")
         logger.info("")
         logger.info("⚙️  Параметры конвертации:")
         logger.info(f"   ├─ Кодек: {self.config.video_codec}")
-        logger.info(f"   ├─ CRF: {self.config.crf}")
+        logger.info(f"   ├─ CRF: {self.config.crf} (высокое качество)")
         logger.info(f"   ├─ Preset: {self.config.preset}")
-        logger.info(f"   ├─ Позиция обрезки: {self.config.crop_position}")
+        logger.info(f"   ├─ Tune: {self.config.tune}")
+        logger.info(f"   ├─ Profile: {self.config.profile}")
+        logger.info(f"   ├─ Обрезка: центр по ширине, полная высота")
         logger.info(
             f"   ├─ Удалить аудио: {'да' if self.config.remove_audio else 'нет'}")
         logger.info(
@@ -627,17 +627,20 @@ class BatchConverter:
 
                 # Выводим результат
                 if result.skipped:
-                    logger.info(f"⏭️  {result.message}")
+                    logger.info(
+                        f"⏭️  {result.input_path.name}: {result.message}")
                 elif result.success:
-                    logger.info(result.message)
+                    logger.info(
+                        f"✅ {result.input_path.name}: {result.message}")
                     if result.output_size > 0:
                         compression = (
                             result.output_size / result.input_size * 100) if result.input_size > 0 else 0
-                        logger.info(f"   └─ Размер: {result.input_size / 1024 / 1024:.1f}MB -> "
+                        logger.info(f"   └─ {result.input_size / 1024 / 1024:.1f}MB → "
                                     f"{result.output_size / 1024 / 1024:.1f}MB ({compression:.1f}%), "
-                                    f"время: {result.processing_time:.1f}s")
+                                    f"{result.processing_time:.1f}s")
                 else:
-                    logger.error(result.message)
+                    logger.error(
+                        f"❌ {result.input_path.name}: {result.message}")
                     if result.error:
                         logger.error(f"   └─ {result.error[:200]}")
 
@@ -715,14 +718,13 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='Пакетная конвертация видео в формат 9:16',
+        description='Пакетная конвертация видео в формат 9:16 (максимальное качество)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
   %(prog)s
   %(prog)s -i videos -o output
-  %(prog)s --crf 15 --preset slow
-  %(prog)s --delete-source --position center
+  %(prog)s --delete-source
   %(prog)s --keep-audio --audio-bitrate 192k
         """
     )
@@ -740,28 +742,6 @@ def main():
         type=Path,
         default=None,
         help='Выходная директория (по умолчанию: ../assets/stock_videos)'
-    )
-
-    # Параметры видео
-    video_group = parser.add_argument_group('Параметры видео')
-    video_group.add_argument(
-        '--crf',
-        type=int,
-        default=18,
-        help='CRF значение (0-51, меньше=лучше, 0=lossless, по умолчанию 18)'
-    )
-    video_group.add_argument(
-        '--preset',
-        choices=['ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
-                 'medium', 'slow', 'slower', 'veryslow'],
-        default='medium',
-        help='Preset скорости кодирования (по умолчанию medium)'
-    )
-    video_group.add_argument(
-        '--position',
-        choices=['top', 'center', 'bottom'],
-        default='top',
-        help='Позиция обрезки по вертикали (по умолчанию top)'
     )
 
     # Параметры аудио
@@ -827,14 +807,12 @@ def main():
 
     # Определяем пути
     if args.input is None:
-        # Относительно скрипта: ../assets/downloads
         script_dir = Path(__file__).resolve().parent
         input_dir = script_dir.parent / 'assets' / 'downloads'
     else:
         input_dir = args.input.resolve()
 
     if args.output is None:
-        # Относительно скрипта: ../assets/stock_videos
         script_dir = Path(__file__).resolve().parent
         output_dir = script_dir.parent / 'assets' / 'stock_videos'
     else:
@@ -846,9 +824,6 @@ def main():
 
     # Создание конфигурации
     config = ConversionConfig(
-        crf=args.crf,
-        preset=args.preset,
-        crop_position=args.position,
         remove_audio=not args.keep_audio,
         audio_codec=args.audio_codec if args.keep_audio else None,
         audio_bitrate=args.audio_bitrate if args.keep_audio else None,
