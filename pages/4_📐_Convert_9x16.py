@@ -1,5 +1,5 @@
 """
-Страница модуля конвертации в формат 9:16
+Страница модуля обрезки в формат 9:16
 """
 
 from modules.video_converter import BatchConverter, ConversionConfig
@@ -14,10 +14,12 @@ st.set_page_config(page_title="Convert to 9:16", page_icon="📐", layout="wide"
 
 
 def main():
-    st.title("📐 Конвертация в формат 9:16")
+    st.title("📐 Обрезка видео в формат 9:16")
     st.markdown(
-        "Конвертируйте видео в вертикальный формат для TikTok, Reels, Shorts")
-    st.info("ℹ️ Видео центрируется по ширине с сохранением максимального качества")
+        "Обрезайте видео в вертикальный формат для TikTok, Reels, Shorts")
+
+    st.info("ℹ️ **Режим работы:** видео обрезается по центру с сохранением качества. "
+            "GPU ускорение (NVIDIA NVENC) включено автоматически при наличии видеокарты.")
 
     st.markdown("---")
 
@@ -108,15 +110,19 @@ def main():
             st.markdown("**Параметры аудио:**")
             audio_codec = st.selectbox(
                 "Кодек",
-                options=['aac', 'mp3', 'opus'],
-                index=0
+                options=['copy', 'aac', 'mp3'],
+                index=0,
+                help="'copy' = без перекодирования (быстро)"
             )
 
-            audio_bitrate = st.selectbox(
-                "Bitrate",
-                options=['128k', '192k', '256k', '320k'],
-                index=1
-            )
+            if audio_codec != 'copy':
+                audio_bitrate = st.selectbox(
+                    "Bitrate",
+                    options=['128k', '192k', '256k', '320k'],
+                    index=1
+                )
+            else:
+                audio_bitrate = None
         else:
             audio_codec = None
             audio_bitrate = None
@@ -125,6 +131,13 @@ def main():
 
         # Дополнительные опции
         with st.expander("🔧 Дополнительные настройки"):
+
+            use_gpu = st.checkbox(
+                "GPU ускорение (NVIDIA)",
+                value=True,
+                help="Включить NVENC для ускорения обработки в 10-20 раз"
+            )
+
             skip_vertical = st.checkbox(
                 "Пропускать уже вертикальные",
                 value=True,
@@ -158,22 +171,31 @@ def main():
             max_workers = st.number_input(
                 "Количество потоков",
                 min_value=1,
-                max_value=16,
-                value=4,
-                help="Больше потоков = быстрее обработка, но выше нагрузка на систему"
+                max_value=8,
+                value=2 if use_gpu else 4,
+                help="Для GPU рекомендуется 1-2 потока"
             )
 
         st.markdown("---")
 
-        # Информация о качестве
-        st.info("""
-        **Параметры качества (фиксированные):**
-        - CRF: 17 (почти lossless)
-        - Preset: slow (оптимальное качество)
-        - Tune: film (для высококачественного видео)
-        - Profile: High (H.264 High Profile)
-        - Обрезка: центр по ширине, полная высота
-        """)
+        # Информация о режиме
+        if use_gpu:
+            st.success("""
+            **🚀 GPU режим (NVENC):**
+            - Энкодер: h264_nvenc (GPU)
+            - Декодер: CPU (совместимость с crop)
+            - Качество: CQ 19 (высокое)
+            - Preset: p7 (максимальное качество)
+            - Битрейт: 50 Mbps (для 4K)
+            - Ускорение: ~5-10x быстрее чисто CPU
+            """)
+        else:
+            st.info("""
+            **⚙️ CPU режим:**
+            - Кодек: libx264
+            - CRF: 18 (высокое качество)
+            - Preset: medium
+            """)
 
     st.markdown("---")
 
@@ -182,7 +204,7 @@ def main():
 
     with col2:
         process_button = st.button(
-            f"🚀 Конвертировать ({len(video_files)} файлов)",
+            f"🚀 Обрезать ({len(video_files)} файлов)",
             type="primary",
             use_container_width=True,
             disabled=len(video_files) == 0
@@ -217,11 +239,12 @@ def main():
         output_dir = Path('assets/stock_videos')
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Создаём конфигурацию (с оптимальными параметрами качества)
+        # Создаём конфигурацию
         config = ConversionConfig(
+            use_gpu=use_gpu,
             remove_audio=remove_audio,
             audio_codec=audio_codec if not remove_audio else None,
-            audio_bitrate=audio_bitrate if not remove_audio else None,
+            audio_bitrate=audio_bitrate if not remove_audio and audio_codec != 'copy' else None,
             delete_source=delete_source,
             skip_if_vertical=skip_vertical,
             max_workers=max_workers,
@@ -234,7 +257,7 @@ def main():
         status_text = st.empty()
 
         try:
-            status_text.text("🎬 Начинаю конвертацию...")
+            status_text.text("🎬 Начинаю обрезку...")
             progress_bar.progress(10)
 
             converter = BatchConverter(config)
@@ -254,7 +277,7 @@ def main():
                 )
 
             progress_bar.progress(100)
-            status_text.text("✅ Конвертация завершена!")
+            status_text.text("✅ Обработка завершена!")
 
             # Показываем статистику
             st.markdown("---")
@@ -271,16 +294,25 @@ def main():
             with col4:
                 st.metric("Пропущено", stats['skipped'])
 
-            # Список результатов
+            # Показываем обработанные файлы с разрешениями
             if stats['success'] > 0:
-                st.subheader("✅ Конвертированные файлы")
+                st.subheader("✅ Обработанные файлы")
 
-                output_files = list(output_dir.glob('*_9x16.mp4'))
-                for output_file in output_files[-5:]:  # Последние 5
-                    st.text(f"• {output_file.name}")
+                for result in stats['results']:
+                    if result.success and not result.skipped:
+                        col1, col2, col3 = st.columns([2, 1, 1])
 
-                if len(output_files) > 5:
-                    st.text(f"... всего {len(output_files)} файлов")
+                        with col1:
+                            st.text(
+                                f"📹 {result.output_path.name if result.output_path else 'N/A'}")
+
+                        with col2:
+                            if result.output_resolution:
+                                st.text(f"📐 {result.output_resolution}")
+
+                        with col3:
+                            if result.processing_time:
+                                st.text(f"⏱️ {result.processing_time:.1f}s")
 
             # Показываем ошибки если есть
             if stats['failed'] > 0:
@@ -295,15 +327,15 @@ def main():
                 from app import add_to_history
                 add_to_history(
                     module="Convert 9:16",
-                    action=f"Converted {stats['success']} videos",
+                    action=f"Cropped {stats['success']} videos",
                     details={
                         'total': stats['total'],
                         'success': stats['success'],
-                        'quality': 'High (CRF 17, slow preset)'
+                        'gpu_used': use_gpu
                     }
                 )
             except ImportError:
-                pass  # app.py может быть недоступен
+                pass
 
         except Exception as e:
             st.error(f"❌ Ошибка обработки: {str(e)}")

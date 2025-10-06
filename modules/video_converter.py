@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Пакетная конвертация видео в формат 9:16 (вертикальный).
+Пакетная конвертация видео в формат 9:16 (вертикальный) с GPU ускорением.
 
 Функции:
 - Обрезка видео в формат 9:16 с центрированием по ширине
-- Удаление аудиодорожки (опционально)
-- Максимальное сохранение качества
+- GPU ускорение (NVIDIA NVENC)
+- Минимальная потеря качества
 - Параллельная обработка нескольких файлов
 - Опциональное удаление исходников после конвертации
 - Подробное логирование и статистика
@@ -57,19 +57,31 @@ TARGET_ASPECT_RATIO = 9 / 16  # ширина / высота
 class ConversionConfig:
     """Конфигурация параметров конвертации."""
 
-    # Параметры видео (оптимизированы для максимального качества)
-    video_codec: str = 'libx264'
-    preset: str = 'slow'  # slow обеспечивает отличное качество
-    crf: int = 17  # 17 = почти визуально lossless
+    # GPU ускорение
+    use_gpu: bool = True  # Автоопределение NVIDIA GPU
+    gpu_encoder: str = 'h264_nvenc'  # NVIDIA NVENC
+
+    # Параметры качества для GPU
+    # Для NVENC: cq (0-51, меньше=лучше), preset (p1-p7, p7=лучшее качество)
+    nvenc_preset: str = 'p7'  # p7 = максимальное качество
+    nvenc_cq: int = 19  # Constant Quality (аналог CRF)
+    nvenc_rc: str = 'vbr'  # Variable bitrate для лучшего качества
+
+    # Битрейт для сохранения качества 4K контента
+    video_bitrate: str = '50M'  # 50 Mbps для 4K
+    max_bitrate: str = '75M'  # Максимальный битрейт
+    bufsize: str = '100M'  # Размер буфера
+
+    # Fallback на CPU если GPU недоступен
+    cpu_encoder: str = 'libx264'
+    cpu_preset: str = 'medium'
+    cpu_crf: int = 18
+
+    # Пиксельный формат
     pix_fmt: str = 'yuv420p'
 
-    # Дополнительные параметры кодирования для качества
-    tune: str = 'film'  # Оптимизация для высококачественного видео
-    profile: str = 'high'  # H.264 High Profile
-    level: str = '4.2'  # Уровень совместимости
-
-    # Параметры обрезки (центрирование по ширине, полная высота)
-    ensure_even_dimensions: bool = True  # Чётные размеры для H.264
+    # Параметры обрезки
+    ensure_even_dimensions: bool = True
 
     # Параметры аудио
     remove_audio: bool = True
@@ -77,24 +89,27 @@ class ConversionConfig:
     audio_bitrate: Optional[str] = None
 
     # Дополнительные параметры
-    max_workers: Optional[int] = None  # None = авто
+    max_workers: Optional[int] = None
     delete_source: bool = False
     overwrite: bool = True
-    skip_if_vertical: bool = True  # Пропускать уже вертикальные видео
+    skip_if_vertical: bool = True
 
     # Фильтры качества
-    min_width: int = 720  # Минимальная ширина для обработки
-    min_height: int = 1280  # Минимальная высота для обработки
+    min_width: int = 720
+    min_height: int = 1280
 
     def validate(self):
         """Валидация конфигурации."""
-        if not 0 <= self.crf <= 51:
-            raise ValueError(f"CRF должен быть 0-51, получено: {self.crf}")
+        if not 0 <= self.nvenc_cq <= 51:
+            raise ValueError(f"CQ должен быть 0-51, получено: {self.nvenc_cq}")
 
-        valid_presets = {'ultrafast', 'superfast', 'veryfast', 'faster',
-                         'fast', 'medium', 'slow', 'slower', 'veryslow'}
-        if self.preset not in valid_presets:
-            raise ValueError(f"preset должен быть одним из {valid_presets}")
+        if not 0 <= self.cpu_crf <= 51:
+            raise ValueError(f"CRF должен быть 0-51, получено: {self.cpu_crf}")
+
+        valid_nvenc_presets = {'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'}
+        if self.nvenc_preset not in valid_nvenc_presets:
+            raise ValueError(
+                f"NVENC preset должен быть одним из {valid_nvenc_presets}")
 
     def to_dict(self) -> dict:
         """Преобразование в словарь."""
@@ -160,9 +175,12 @@ class ConversionResult:
     message: str
     input_size: int = 0
     output_size: int = 0
+    input_resolution: str = ""
+    output_resolution: str = ""
     processing_time: float = 0.0
     skipped: bool = False
     error: Optional[str] = None
+    used_gpu: bool = False
 
     def to_dict(self) -> dict:
         """Преобразование в словарь."""
@@ -173,10 +191,13 @@ class ConversionResult:
             'message': self.message,
             'input_size_mb': round(self.input_size / (1024 * 1024), 2),
             'output_size_mb': round(self.output_size / (1024 * 1024), 2) if self.output_size else 0,
-            'compression_ratio': round(self.output_size / self.input_size, 3) if self.input_size > 0 else 0,
+            'size_ratio': round(self.output_size / self.input_size, 3) if self.input_size > 0 else 0,
+            'input_resolution': self.input_resolution,
+            'output_resolution': self.output_resolution,
             'processing_time': round(self.processing_time, 2),
             'skipped': self.skipped,
             'error': self.error,
+            'used_gpu': self.used_gpu,
         }
 
 
@@ -196,6 +217,29 @@ def check_ffmpeg() -> bool:
         return False
 
     return True
+
+
+def check_nvidia_gpu() -> bool:
+    """
+    Проверяет наличие NVIDIA GPU и поддержку NVENC.
+
+    Returns:
+        bool: True если NVENC доступен
+    """
+    try:
+        # Проверяем доступность h264_nvenc
+        result = subprocess.run(
+            ['ffmpeg', '-hide_banner', '-encoders'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        return 'h264_nvenc' in result.stdout
+
+    except Exception as e:
+        logger.debug(f"Не удалось проверить NVENC: {e}")
+        return False
 
 
 def get_video_metadata(video_path: Path) -> Optional[VideoMetadata]:
@@ -288,10 +332,53 @@ def get_video_metadata(video_path: Path) -> Optional[VideoMetadata]:
         return None
 
 
+def calculate_crop_dimensions(metadata: VideoMetadata, config: ConversionConfig) -> tuple[int, int, int, int]:
+    """
+    Вычисляет параметры обрезки для формата 9:16.
+
+    Args:
+        metadata: Метаданные видео
+        config: Конфигурация
+
+    Returns:
+        tuple: (width, height, x, y) для crop фильтра
+    """
+    in_w = metadata.width
+    in_h = metadata.height
+
+    # Вычисляем целевую ширину для соотношения 9:16 при текущей высоте
+    target_w = int(in_h * 9 / 16)
+
+    # Обеспечиваем чётность
+    if config.ensure_even_dimensions and target_w % 2 != 0:
+        target_w -= 1
+
+    # Если целевая ширина больше исходной - обрезаем по высоте
+    if target_w > in_w:
+        target_w = in_w
+        if config.ensure_even_dimensions and target_w % 2 != 0:
+            target_w -= 1
+
+        target_h = int(target_w / 9 * 16)
+        if config.ensure_even_dimensions and target_h % 2 != 0:
+            target_h -= 1
+
+        # Центрируем по высоте
+        x = 0
+        y = (in_h - target_h) // 2
+
+        return (target_w, target_h, x, y)
+
+    # Стандартный случай: обрезаем по ширине, сохраняем высоту
+    x = (in_w - target_w) // 2
+    y = 0
+
+    return (target_w, in_h, x, y)
+
+
 def build_crop_filter(metadata: VideoMetadata, config: ConversionConfig) -> str:
     """
     Создаёт FFmpeg фильтр для обрезки в 9:16.
-    Центрирование по ширине, полная высота.
 
     Args:
         metadata: Метаданные видео
@@ -300,41 +387,8 @@ def build_crop_filter(metadata: VideoMetadata, config: ConversionConfig) -> str:
     Returns:
         str: FFmpeg filter string
     """
-    in_w = metadata.width
-    in_h = metadata.height
-
-    # Вычисляем целевую ширину для соотношения 9:16 при текущей высоте
-    target_w = in_h * 9 / 16
-
-    # Обеспечиваем чётность (H.264 требует чётные размеры)
-    target_w = int(target_w)
-    if config.ensure_even_dimensions and target_w % 2 != 0:
-        target_w -= 1
-
-    # Если целевая ширина больше исходной - видео слишком узкое
-    # В этом случае обрезаем по высоте, сохраняя ширину
-    if target_w > in_w:
-        target_w = in_w
-        if config.ensure_even_dimensions and target_w % 2 != 0:
-            target_w -= 1
-
-        # Вычисляем соответствующую высоту
-        target_h = int(target_w / 9 * 16)
-        if config.ensure_even_dimensions and target_h % 2 != 0:
-            target_h -= 1
-
-        # Центрируем по высоте
-        y = (in_h - target_h) // 2
-        x = 0
-
-        return f"crop={target_w}:{target_h}:{x}:{y}"
-
-    # Стандартный случай: обрезаем по ширине, сохраняем высоту
-    # Центрируем по ширине
-    x = (in_w - target_w) // 2
-    y = 0  # Полная высота от верха до низа
-
-    return f"crop={target_w}:{in_h}:{x}:{y}"
+    w, h, x, y = calculate_crop_dimensions(metadata, config)
+    return f"crop={w}:{h}:{x}:{y}"
 
 
 def find_video_files(directory: Path) -> List[Path]:
@@ -396,14 +450,17 @@ def convert_single_video(
                 error="Metadata extraction failed"
             )
 
+        input_resolution = f"{metadata.width}x{metadata.height}"
+
         # Проверяем минимальные требования
         if metadata.width < config.min_width or metadata.height < config.min_height:
             return ConversionResult(
                 input_path=input_path,
                 output_path=None,
                 success=False,
-                message=f"Разрешение слишком низкое: {metadata.width}x{metadata.height}",
+                message=f"Разрешение слишком низкое: {input_resolution}",
                 input_size=input_size,
+                input_resolution=input_resolution,
                 skipped=True
             )
 
@@ -415,6 +472,7 @@ def convert_single_video(
                 success=True,
                 message="Уже в формате 9:16, пропущено",
                 input_size=input_size,
+                input_resolution=input_resolution,
                 skipped=True
             )
 
@@ -432,13 +490,22 @@ def convert_single_video(
                 success=True,
                 message="Файл уже существует, пропущено",
                 input_size=input_size,
+                input_resolution=input_resolution,
                 skipped=True
             )
 
-        # Строим фильтр обрезки
-        crop_filter = build_crop_filter(metadata, config)
+        # Вычисляем параметры обрезки
+        crop_w, crop_h, crop_x, crop_y = calculate_crop_dimensions(
+            metadata, config)
+        output_resolution = f"{crop_w}x{crop_h}"
 
-        # Строим команду ffmpeg с оптимизацией качества
+        # Строим фильтр обрезки
+        crop_filter = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}"
+
+        # Проверяем доступность GPU
+        use_gpu = config.use_gpu and check_nvidia_gpu()
+
+        # Строим команду ffmpeg
         cmd = [
             'ffmpeg',
             '-hide_banner',
@@ -449,25 +516,45 @@ def convert_single_video(
         if config.overwrite:
             cmd.append('-y')
 
-        cmd.extend([
-            '-i', str(input_path),
-            '-vf', crop_filter,
-            '-c:v', config.video_codec,
-            '-preset', config.preset,
-            '-crf', str(config.crf),
-            '-tune', config.tune,
-            '-profile:v', config.profile,
-            '-level', config.level,
-            '-pix_fmt', config.pix_fmt,
-        ])
+        # Входной файл (без GPU декодирования - crop работает только на CPU)
+        cmd.extend(['-i', str(input_path)])
+
+        # Применяем обрезку (на CPU)
+        cmd.extend(['-vf', crop_filter])
+
+        # Выбираем кодек (GPU или CPU)
+        if use_gpu:
+            # GPU энкодирование (NVENC)
+            cmd.extend([
+                '-c:v', config.gpu_encoder,
+                '-preset', config.nvenc_preset,
+                '-rc:v', config.nvenc_rc,
+                '-cq:v', str(config.nvenc_cq),
+                '-b:v', config.video_bitrate,
+                '-maxrate:v', config.max_bitrate,
+                '-bufsize', config.bufsize,
+                '-profile:v', 'high',
+                '-pix_fmt', config.pix_fmt,
+            ])
+        else:
+            # CPU энкодирование
+            cmd.extend([
+                '-c:v', config.cpu_encoder,
+                '-preset', config.cpu_preset,
+                '-crf', str(config.cpu_crf),
+                '-pix_fmt', config.pix_fmt,
+            ])
 
         # Обработка аудио
         if config.remove_audio:
             cmd.append('-an')
         elif config.audio_codec:
-            cmd.extend(['-c:a', config.audio_codec])
-            if config.audio_bitrate:
-                cmd.extend(['-b:a', config.audio_bitrate])
+            if config.audio_codec == 'copy':
+                cmd.extend(['-c:a', 'copy'])
+            else:
+                cmd.extend(['-c:a', config.audio_codec])
+                if config.audio_bitrate:
+                    cmd.extend(['-b:a', config.audio_bitrate])
         else:
             # Копируем аудио без перекодирования
             cmd.extend(['-c:a', 'copy'])
@@ -494,6 +581,7 @@ def convert_single_video(
                 success=False,
                 message="Выходной файл не создан",
                 input_size=input_size,
+                input_resolution=input_resolution,
                 error="Output file not created",
                 processing_time=time.time() - start_time
             )
@@ -511,15 +599,19 @@ def convert_single_video(
             deleted_msg = ""
 
         processing_time = time.time() - start_time
+        encoder_type = "GPU (NVENC)" if use_gpu else "CPU"
 
         return ConversionResult(
             input_path=input_path,
             output_path=output_path,
             success=True,
-            message=f"✅ Успешно конвертировано{deleted_msg}",
+            message=f"✅ Успешно [{encoder_type}]{deleted_msg}",
             input_size=input_size,
             output_size=output_size,
-            processing_time=processing_time
+            input_resolution=input_resolution,
+            output_resolution=output_resolution,
+            processing_time=processing_time,
+            used_gpu=use_gpu
         )
 
     except subprocess.CalledProcessError as e:
@@ -530,6 +622,7 @@ def convert_single_video(
             success=False,
             message=f"❌ Ошибка FFmpeg: {input_path.name}",
             input_size=input_size,
+            input_resolution=input_resolution if 'input_resolution' in locals() else "",
             error=error_msg,
             processing_time=time.time() - start_time
         )
@@ -541,6 +634,7 @@ def convert_single_video(
             success=False,
             message=f"❌ Неожиданная ошибка: {input_path.name}",
             input_size=input_size,
+            input_resolution=input_resolution if 'input_resolution' in locals() else "",
             error=str(e),
             processing_time=time.time() - start_time
         )
@@ -575,12 +669,15 @@ class BatchConverter:
             Dict: Статистика обработки
         """
         logger.info("=" * 70)
-        logger.info("🎬 ПАКЕТНАЯ КОНВЕРТАЦИЯ ВИДЕО В ФОРМАТ 9:16")
+        logger.info("🎬 ОБРЕЗКА ВИДЕО В ФОРМАТ 9:16")
         logger.info("=" * 70)
 
         # Проверяем ffmpeg
         if not check_ffmpeg():
             raise RuntimeError("FFmpeg недоступен")
+
+        # Проверяем GPU
+        gpu_available = check_nvidia_gpu() if self.config.use_gpu else False
 
         # Находим видео файлы
         logger.info(f"📂 Входная директория: {input_dir}")
@@ -594,13 +691,22 @@ class BatchConverter:
 
         logger.info(f"🎥 Найдено файлов: {len(video_files)}")
         logger.info("")
-        logger.info("⚙️  Параметры конвертации:")
-        logger.info(f"   ├─ Кодек: {self.config.video_codec}")
-        logger.info(f"   ├─ CRF: {self.config.crf} (высокое качество)")
-        logger.info(f"   ├─ Preset: {self.config.preset}")
-        logger.info(f"   ├─ Tune: {self.config.tune}")
-        logger.info(f"   ├─ Profile: {self.config.profile}")
-        logger.info(f"   ├─ Обрезка: центр по ширине, полная высота")
+        logger.info("⚙️  Параметры обработки:")
+
+        if gpu_available:
+            logger.info(f"   ├─ 🚀 GPU: NVIDIA RTX (NVENC)")
+            logger.info(f"   ├─ Кодек: {self.config.gpu_encoder}")
+            logger.info(f"   ├─ Качество: CQ {self.config.nvenc_cq}")
+            logger.info(
+                f"   ├─ Preset: {self.config.nvenc_preset} (максимальное качество)")
+            logger.info(f"   ├─ Битрейт: {self.config.video_bitrate} (target)")
+        else:
+            logger.info(f"   ├─ ⚠️  GPU: недоступен, используется CPU")
+            logger.info(f"   ├─ Кодек: {self.config.cpu_encoder}")
+            logger.info(f"   ├─ CRF: {self.config.cpu_crf}")
+            logger.info(f"   ├─ Preset: {self.config.cpu_preset}")
+
+        logger.info(f"   ├─ Обрезка: центр по ширине, полная высота → 9:16")
         logger.info(
             f"   ├─ Удалить аудио: {'да' if self.config.remove_audio else 'нет'}")
         logger.info(
@@ -610,7 +716,12 @@ class BatchConverter:
 
         # Обработка
         results: List[ConversionResult] = []
-        max_workers = self.config.max_workers or min(4, len(video_files))
+
+        # Для GPU лучше меньше параллельных потоков (GPU сам параллелит)
+        if gpu_available:
+            max_workers = self.config.max_workers or min(2, len(video_files))
+        else:
+            max_workers = self.config.max_workers or min(4, len(video_files))
 
         logger.info(f"🚀 Начинаю обработку ({max_workers} потоков)...")
         logger.info("")
@@ -633,11 +744,17 @@ class BatchConverter:
                     logger.info(
                         f"✅ {result.input_path.name}: {result.message}")
                     if result.output_size > 0:
-                        compression = (
+                        size_ratio = (
                             result.output_size / result.input_size * 100) if result.input_size > 0 else 0
-                        logger.info(f"   └─ {result.input_size / 1024 / 1024:.1f}MB → "
-                                    f"{result.output_size / 1024 / 1024:.1f}MB ({compression:.1f}%), "
-                                    f"{result.processing_time:.1f}s")
+                        logger.info(
+                            f"   ├─ Размер: {result.input_size / 1024 / 1024:.1f}MB → "
+                            f"{result.output_size / 1024 / 1024:.1f}MB ({size_ratio:.1f}%)"
+                        )
+                        logger.info(
+                            f"   ├─ Разрешение: {result.input_resolution} → {result.output_resolution}"
+                        )
+                        logger.info(
+                            f"   └─ Время: {result.processing_time:.1f}s")
                 else:
                     logger.error(
                         f"❌ {result.input_path.name}: {result.message}")
@@ -649,6 +766,7 @@ class BatchConverter:
         success = sum(1 for r in results if r.success and not r.skipped)
         failed = sum(1 for r in results if not r.success)
         skipped = sum(1 for r in results if r.skipped)
+        gpu_used = sum(1 for r in results if r.used_gpu and r.success)
 
         total_input_size = sum(r.input_size for r in results)
         total_output_size = sum(
@@ -661,6 +779,7 @@ class BatchConverter:
         logger.info("=" * 70)
         logger.info(f"Всего файлов: {total}")
         logger.info(f"✅ Успешно: {success}")
+        logger.info(f"   └─ GPU ускорение: {gpu_used}/{success}")
         logger.info(f"❌ Ошибок: {failed}")
         logger.info(f"⏭️  Пропущено: {skipped}")
 
@@ -669,10 +788,16 @@ class BatchConverter:
                 f"📦 Входной размер: {total_input_size / 1024 / 1024:.1f} MB")
             logger.info(
                 f"📦 Выходной размер: {total_output_size / 1024 / 1024:.1f} MB")
-            logger.info(
-                f"📉 Сжатие: {total_output_size / total_input_size * 100:.1f}%")
+            size_ratio = total_output_size / total_input_size * 100
+            logger.info(f"📊 Соотношение размеров: {size_ratio:.1f}%")
 
-        logger.info(f"⏱️  Общее время: {total_time:.1f}s")
+        logger.info(
+            f"⏱️  Общее время: {total_time:.1f}s ({total_time/60:.1f} мин)")
+
+        if success > 0:
+            avg_time = total_time / success
+            logger.info(f"⚡ Среднее время на файл: {avg_time:.1f}s")
+
         logger.info("=" * 70)
 
         # Сохраняем отчёт
@@ -682,15 +807,18 @@ class BatchConverter:
             report = {
                 'timestamp': datetime.now().isoformat(),
                 'config': self.config.to_dict(),
+                'gpu_available': gpu_available,
                 'statistics': {
                     'total': total,
                     'success': success,
                     'failed': failed,
                     'skipped': skipped,
+                    'gpu_used': gpu_used,
                     'total_input_size_mb': round(total_input_size / 1024 / 1024, 2),
                     'total_output_size_mb': round(total_output_size / 1024 / 1024, 2),
-                    'compression_ratio': round(total_output_size / total_input_size, 3) if total_input_size > 0 else 0,
+                    'size_ratio_percent': round(total_output_size / total_input_size * 100, 1) if total_input_size > 0 else 0,
                     'total_time_seconds': round(total_time, 2),
+                    'avg_time_per_file': round(total_time / success, 2) if success > 0 else 0,
                 },
                 'results': [r.to_dict() for r in results]
             }
@@ -718,14 +846,15 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='Пакетная конвертация видео в формат 9:16 (максимальное качество)',
+        description='Обрезка видео в формат 9:16 с GPU ускорением',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
-  %(prog)s
-  %(prog)s -i videos -o output
-  %(prog)s --delete-source
-  %(prog)s --keep-audio --audio-bitrate 192k
+  %(prog)s                                    # Обработка с GPU
+  %(prog)s -i videos -o output                # Свои папки
+  %(prog)s --no-gpu                           # Без GPU (CPU)
+  %(prog)s --delete-source                    # Удалить исходники
+  %(prog)s --keep-audio --audio-bitrate 192k  # Сохранить аудио
         """
     )
 
@@ -742,6 +871,14 @@ def main():
         type=Path,
         default=None,
         help='Выходная директория (по умолчанию: ../assets/stock_videos)'
+    )
+
+    # GPU опции
+    gpu_group = parser.add_argument_group('GPU')
+    gpu_group.add_argument(
+        '--no-gpu',
+        action='store_true',
+        help='Отключить GPU ускорение (использовать CPU)'
     )
 
     # Параметры аудио
@@ -824,6 +961,7 @@ def main():
 
     # Создание конфигурации
     config = ConversionConfig(
+        use_gpu=not args.no_gpu,
         remove_audio=not args.keep_audio,
         audio_codec=args.audio_codec if args.keep_audio else None,
         audio_bitrate=args.audio_bitrate if args.keep_audio else None,
