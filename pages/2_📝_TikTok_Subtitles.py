@@ -23,6 +23,32 @@ QUALITY_PRESETS = {
     'Быстрое': {'crf': 23, 'preset': 'fast', 'bitrate': '6000k'}
 }
 
+# Шрифты с поддержкой кириллицы и коммерческим использованием
+FONTS = [
+    'Arial',
+    'Arial Black',
+    'Calibri',
+    'Verdana',
+    'Tahoma',
+    'Trebuchet MS',
+    'Georgia',
+    'Times New Roman',
+    'Impact',
+    'Comic Sans MS',
+    'Courier New',
+    'Segoe UI',
+    'Segoe UI Black',
+    'Segoe UI Semibold',
+    'Century Gothic',
+    'Orchidea Pro Medium Italic',  # Специальный шрифт
+    'Montserrat',
+    'Roboto',
+    'Open Sans',
+    'Oswald',
+    'PT Sans',
+    'Bebas Neue'
+]
+
 
 def main():
     st.title("📝 Субтитры в стиле TikTok")
@@ -30,9 +56,11 @@ def main():
 
     st.markdown("---")
 
-    col1, col2 = st.columns([1, 1])
+    # Основной layout: параметры слева, превью справа
+    main_col, preview_col = st.columns([2, 1])
 
-    with col1:
+    with main_col:
+        # Секция выбора видео
         st.subheader("📁 Видео файл")
 
         video_source = st.radio(
@@ -69,84 +97,90 @@ def main():
 
         st.markdown("---")
 
-        st.subheader("🎤 Whisper настройки")
+        # Две колонки для параметров
+        param_col1, param_col2 = st.columns(2)
 
-        model = st.selectbox(
-            "Модель Whisper",
-            options=['tiny', 'base', 'small',
-                     'medium', 'large-v2', 'large-v3'],
-            index=3,  # medium
-            help="medium - оптимальный баланс скорости и качества для русского языка"
-        )
+        with param_col1:
+            st.subheader("🎤 Whisper настройки")
 
-        language = st.selectbox(
-            "Язык",
-            options=['ru', 'en', 'es', 'fr', 'de', 'it', 'pt', 'auto'],
-            index=0,  # ru по умолчанию
-            format_func=lambda x: 'Авто' if x == 'auto' else x.upper(),
-            help="Выберите язык аудио или 'Авто' для автоопределения"
-        )
-
-        device = st.selectbox(
-            "Устройство",
-            options=['cuda', 'cpu', 'auto'],
-            index=0,  # cuda по умолчанию
-            format_func=lambda x: 'Авто' if x == 'auto' else x.upper(),
-            help="CUDA (GPU) - быстрее в ~10 раз, CPU - медленнее но стабильнее"
-        )
-
-        vad = st.checkbox(
-            "Использовать VAD",
-            value=True,
-            help="Voice Activity Detection - улучшает качество транскрипции"
-        )
-
-    with col2:
-        st.subheader("🎨 Стиль субтитров")
-
-        col_green, col_white = st.columns(2)
-
-        with col_green:
-            highlight_color = st.color_picker(
-                "Цвет подсветки",
-                value="#00FF6A",
-                help="Цвет текущего слова"
+            model = st.selectbox(
+                "Модель Whisper",
+                options=['tiny', 'base', 'small',
+                         'medium', 'large-v2', 'large-v3'],
+                index=3,  # medium
+                help="medium - оптимальный баланс скорости и качества для русского языка"
             )
 
-        with col_white:
-            normal_color = st.color_picker(
-                "Цвет текста",
-                value="#FFFFFF",
-                help="Цвет остальных слов"
+            language = st.selectbox(
+                "Язык",
+                options=['ru', 'en', 'es', 'fr', 'de', 'it', 'pt', 'auto'],
+                index=0,  # ru по умолчанию
+                format_func=lambda x: 'Авто' if x == 'auto' else x.upper(),
+                help="Выберите язык аудио или 'Авто' для автоопределения"
             )
 
-        font_name = st.text_input(
-            "Шрифт",
-            value="Arial",
-            help="Название шрифта (должен быть установлен в системе)"
-        )
+            device = st.selectbox(
+                "Устройство",
+                options=['cuda', 'cpu', 'auto'],
+                index=0,  # cuda по умолчанию
+                format_func=lambda x: 'Авто' if x == 'auto' else x.upper(),
+                help="CUDA (GPU) - быстрее в ~10 раз, CPU - медленнее но стабильнее"
+            )
 
-        font_scale = st.slider(
-            "Размер шрифта (% от высоты)",
-            min_value=1,
-            max_value=20,
-            value=7,
-            help="Процент от высоты видео"
-        ) / 100
+            vad = st.checkbox(
+                "Использовать VAD",
+                value=True,
+                help="Voice Activity Detection - улучшает качество транскрипции"
+            )
 
-        bold = st.checkbox("Жирный шрифт", value=True)
+        with param_col2:
+            st.subheader("🎨 Стиль субтитров")
 
-        position = st.selectbox(
-            "Позиция по вертикали",
-            options=['top', 'center', 'bottom'],
-            index=2,  # bottom
-            format_func=lambda x: {'top': 'Сверху',
-                                   'center': 'По центру', 'bottom': 'Снизу'}[x]
-        )
+            col_green, col_white = st.columns(2)
+
+            with col_green:
+                highlight_color = st.color_picker(
+                    "Цвет подсветки",
+                    value="#00FF6A",
+                    help="Цвет текущего слова"
+                )
+
+            with col_white:
+                normal_color = st.color_picker(
+                    "Цвет текста",
+                    value="#FFFFFF",
+                    help="Цвет остальных слов"
+                )
+
+            font_name = st.selectbox(
+                "Шрифт",
+                options=FONTS,
+                index=0,  # Arial по умолчанию
+                help="Выберите шрифт из списка (все поддерживают кириллицу)"
+            )
+
+            font_scale = st.slider(
+                "Размер шрифта (% от высоты)",
+                min_value=1,
+                max_value=20,
+                value=7,
+                help="Процент от высоты видео"
+            ) / 100
+
+            bold = st.checkbox("Жирный шрифт", value=True)
+
+            position = st.selectbox(
+                "Позиция по вертикали",
+                options=['bottom', 'center', 'top'],
+                index=0,  # bottom
+                format_func=lambda x: {
+                    'top': 'Сверху ⬆️', 'center': 'По центру ↔️', 'bottom': 'Снизу ⬇️'}[x]
+            )
 
         st.markdown("---")
 
-        with st.expander("🎬 Настройки качества видео"):
+        # Настройки качества
+        with st.expander("🎬 Настройки качества видео", expanded=False):
             quality_preset = st.selectbox(
                 "Пресет качества",
                 options=list(QUALITY_PRESETS.keys()),
@@ -192,11 +226,9 @@ def main():
                 preset = preset_default
                 video_bitrate = bitrate_default
 
-    st.markdown("---")
+        st.markdown("---")
 
-    # Кнопка запуска
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
+        # Кнопка запуска
         process_button = st.button(
             "🚀 Создать субтитры",
             type="primary",
@@ -204,6 +236,46 @@ def main():
             disabled=not video_file
         )
 
+    # Правая колонка - превью видео
+    with preview_col:
+        st.subheader("📱 Превью")
+
+        # Placeholder для превью
+        preview_placeholder = st.empty()
+
+        # CSS для фиксированной ширины видео
+        st.markdown("""
+        <style>
+        /* Стиль для видео превью */
+        [data-testid="stVideo"] {
+            max-width: 280px !important;
+            margin: 0 auto;
+        }
+        [data-testid="stVideo"] video {
+            width: 100% !important;
+            max-width: 280px !important;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        # Показываем исходное видео если выбрано
+        if video_file:
+            with preview_placeholder.container():
+                st.caption("🎬 Исходное видео:")
+                try:
+                    if video_source == "Загрузить файл":
+                        st.video(video_file)
+                    else:
+                        st.video(str(video_file))
+                except Exception as e:
+                    st.error(f"Ошибка загрузки превью: {e}")
+        else:
+            with preview_placeholder.container():
+                st.info("👈 Выберите видео для начала работы")
+
+    # Обработка при нажатии кнопки
     if process_button and video_file:
         # Подготовка директорий
         temp_dir = Path('assets/temp')
@@ -255,9 +327,10 @@ def main():
             audio_bitrate='320k'  # Максимальное качество аудио
         )
 
-        # UI для прогресса
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        # UI для прогресса в левой колонке
+        with main_col:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
 
         try:
             status_text.text("🎤 Транскрипция аудио...")
@@ -290,30 +363,36 @@ def main():
                 st.info(
                     f"📊 Размер файла: {output_size_mb:.2f} MB | Качество: {quality_preset}")
 
-                # Кнопка скачивания видео
-                with open(output_path, 'rb') as f:
-                    st.download_button(
-                        "📥 Скачать видео",
-                        data=f,
-                        file_name=output_path.name,
-                        mime="video/mp4",
-                        use_container_width=True
-                    )
+                # Кнопки скачивания
+                col_dl1, col_dl2 = st.columns(2)
 
-                # Превью видео
-                st.video(str(output_path))
-
-                # Скачивание ASS файла
-                ass_path = output_path.with_suffix('.ass')
-                if ass_path.exists():
-                    with open(ass_path, 'rb') as f:
+                with col_dl1:
+                    with open(output_path, 'rb') as f:
                         st.download_button(
-                            "📄 Скачать субтитры (ASS)",
+                            "📥 Скачать видео",
                             data=f,
-                            file_name=ass_path.name,
-                            mime="text/plain",
+                            file_name=output_path.name,
+                            mime="video/mp4",
                             use_container_width=True
                         )
+
+                with col_dl2:
+                    # Скачивание ASS файла
+                    ass_path = output_path.with_suffix('.ass')
+                    if ass_path.exists():
+                        with open(ass_path, 'rb') as f:
+                            st.download_button(
+                                "📄 Скачать субтитры (ASS)",
+                                data=f,
+                                file_name=ass_path.name,
+                                mime="text/plain",
+                                use_container_width=True
+                            )
+
+                # Обновляем превью справа
+                with preview_placeholder.container():
+                    st.caption("✅ Готовое видео с субтитрами:")
+                    st.video(str(output_path))
 
             # Добавление в историю (безопасно)
             try:
@@ -326,7 +405,8 @@ def main():
                         'model': model,
                         'language': final_language or 'auto',
                         'device': final_device or 'auto',
-                        'quality': quality_preset
+                        'quality': quality_preset,
+                        'font': font_name
                     }
                 )
             except ImportError:
