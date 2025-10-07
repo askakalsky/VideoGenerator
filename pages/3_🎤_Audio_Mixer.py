@@ -15,7 +15,7 @@ st.set_page_config(page_title="Audio Mixer", page_icon="🎤", layout="wide")
 
 def main():
     st.title("🎤 Audio Mixer")
-    st.markdown("Добавьте аудио к случайному или заданному фрагменту видео")
+    st.markdown("Добавьте аудио к случайному фрагменту видео")
 
     st.markdown("---")
 
@@ -39,10 +39,10 @@ def main():
                 key='video_mixer'
             )
         else:
-            downloads_dir = Path('assets/downloads')
-            if downloads_dir.exists():
-                video_files = list(downloads_dir.glob('*.mp4')) + \
-                    list(downloads_dir.glob('*.mov'))
+            stock_videos_dir = Path('assets/stock_videos')
+            if stock_videos_dir.exists():
+                video_files = list(stock_videos_dir.glob('*.mp4')) + \
+                    list(stock_videos_dir.glob('*.mov'))
                 if video_files:
                     video_file = st.selectbox(
                         "Выберите видео:",
@@ -51,10 +51,10 @@ def main():
                         key='select_video_mixer'
                     )
                 else:
-                    st.warning("Нет видео файлов в папке downloads")
+                    st.warning("Нет видео файлов в папке stock_videos")
                     video_file = None
             else:
-                st.warning("Папка downloads не найдена")
+                st.warning("Папка stock_videos не найдена")
                 video_file = None
 
         # Аудио
@@ -72,10 +72,10 @@ def main():
                 key='audio_mixer'
             )
         else:
-            music_dir = Path('assets/music')
-            if music_dir.exists():
-                audio_files = list(music_dir.glob('*.mp3')) + \
-                    list(music_dir.glob('*.wav'))
+            generated_audio_dir = Path('assets/generated_audio')
+            if generated_audio_dir.exists():
+                audio_files = list(generated_audio_dir.glob('*.mp3')) + \
+                    list(generated_audio_dir.glob('*.wav'))
                 if audio_files:
                     audio_file = st.selectbox(
                         "Выберите аудио:",
@@ -84,70 +84,56 @@ def main():
                         key='select_audio_mixer'
                     )
                 else:
-                    st.warning("Нет аудио файлов в папке music")
+                    st.warning("Нет аудио файлов в папке generated_audio")
                     audio_file = None
             else:
-                st.warning("Папка music не найдена")
+                st.warning("Папка generated_audio не найдена")
                 audio_file = None
 
     with col2:
         st.subheader("⚙️ Настройки времени")
 
-        # Режим выбора времени
-        time_mode = st.radio(
-            "Режим выбора времени:",
-            ["Случайное", "Конкретное время", "Диапазон"],
-            horizontal=True
-        )
+        st.info("🎲 Аудио будет добавлено в случайное место видео с учетом отступов")
 
-        specific_start_time = None
-        min_start_time = 5.0
-        max_start_time = None
-        random_seed = None
-
-        if time_mode == "Случайное":
+        col_min_start, col_min_end = st.columns(2)
+        with col_min_start:
             min_start_time = st.number_input(
                 "Минимальное время начала (сек)",
                 min_value=0.0,
                 value=5.0,
-                step=1.0
+                step=1.0,
+                key='min_start_time',
+                help="Самое раннее время, когда может начаться аудио"
             )
-
-            use_seed = st.checkbox("Использовать seed (воспроизводимость)")
-            if use_seed:
-                random_seed = st.number_input(
-                    "Random seed",
-                    min_value=0,
-                    value=42,
-                    step=1
-                )
-
-        elif time_mode == "Конкретное время":
-            specific_start_time = st.number_input(
-                "Время начала (сек)",
+        with col_min_end:
+            min_end_offset = st.number_input(
+                "Минимальное время от конца (сек)",
                 min_value=0.0,
                 value=10.0,
-                step=0.5
+                step=1.0,
+                key='min_end_offset',
+                help="Сколько секунд должно остаться от конца видео после окончания аудио"
             )
 
-        else:  # Диапазон
-            col_min, col_max = st.columns(2)
-            with col_min:
-                min_start_time = st.number_input(
-                    "Мин. время (сек)",
-                    min_value=0.0,
-                    value=5.0,
-                    step=1.0,
-                    key='min_time'
-                )
-            with col_max:
-                max_start_time = st.number_input(
-                    "Макс. время (сек)",
-                    min_value=0.0,
-                    value=30.0,
-                    step=1.0,
-                    key='max_time'
-                )
+        # Пояснение алгоритма
+        with st.expander("ℹ️ Как это работает?", expanded=False):
+            st.markdown("""
+            **Пример:**
+            - Видео: 3 минуты (180 сек)
+            - Аудио: 1 минута (60 сек)
+            - Мин. время начала: 5 сек
+            - Мин. время от конца: 10 сек
+            
+            **Алгоритм:**
+            1. Макс. точка конца аудио: 180 - 10 = **170 сек (2:50)**
+            2. Макс. точка начала: 170 - 60 = **110 сек (1:50)**
+            3. Допустимый диапазон: **00:05 - 01:50**
+            4. Выбирается случайная точка, например **00:15**
+            5. Вырезается видео с **00:15** до **01:15**
+            6. Все до 00:15 и после 01:15 - обрезается
+            
+            **Результат:** Видео 1 минута с аудио
+            """)
 
         st.markdown("---")
 
@@ -190,27 +176,43 @@ def main():
 
         st.markdown("---")
 
-        with st.expander("🎬 Настройки качества видео"):
+        with st.expander("🎬 Настройки качества видео", expanded=False):
+            st.info(
+                "⚡ По умолчанию установлены оптимальные настройки для наилучшего качества")
+
             crf = st.slider(
-                "CRF (качество)",
+                "CRF (качество, меньше = лучше)",
                 min_value=0,
                 max_value=51,
-                value=18,
+                value=15,
+                help="15-18 = отличное качество, 18-23 = хорошее, 23+ = среднее",
                 key='crf_mixer'
             )
 
             preset = st.selectbox(
-                "Preset скорости",
+                "Preset скорости кодирования",
                 options=['ultrafast', 'superfast', 'veryfast', 'faster',
                          'fast', 'medium', 'slow', 'slower', 'veryslow'],
-                index=5,
+                index=7,  # 'slower' - отличный баланс качества и скорости
+                help="slower/veryslow = лучшее качество при том же размере файла",
                 key='preset_mixer'
             )
 
-            video_bitrate = st.text_input(
-                "Video bitrate", value="8000k", key='vb_mixer')
-            audio_bitrate = st.text_input(
-                "Audio bitrate", value="320k", key='ab_mixer')
+            col_vb, col_ab = st.columns(2)
+            with col_vb:
+                video_bitrate = st.text_input(
+                    "Video bitrate",
+                    value="12000k",
+                    help="Для 4K рекомендуется 12000k-20000k",
+                    key='vb_mixer'
+                )
+            with col_ab:
+                audio_bitrate = st.text_input(
+                    "Audio bitrate",
+                    value="320k",
+                    help="320k = максимальное качество для MP3",
+                    key='ab_mixer'
+                )
 
     st.markdown("---")
 
@@ -246,20 +248,20 @@ def main():
             audio_path = audio_file
 
         # Путь вывода
-        output_dir = Path('assets/output')
+        output_dir = Path('assets/mixed_videos')
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{video_path.stem}_mixed.mp4"
 
-        # Создаём конфигурации
+        # Создаём конфигурации (БЕЗ random_seed - всегда случайно)
         audio_settings = AudioSettings(
             min_start_time=min_start_time,
-            max_start_time=max_start_time,
-            specific_start_time=specific_start_time,
+            min_end_offset=min_end_offset,  # ИЗМЕНЕНО
+            specific_start_time=None,  # Всегда случайное
             audio_volume=audio_volume,
             original_volume=original_volume,
             fade_in_duration=fade_in,
             fade_out_duration=fade_out,
-            random_seed=random_seed
+            random_seed=None  # Без seed - полностью случайно
         )
 
         video_config = VideoConfig(
@@ -320,7 +322,8 @@ def main():
                     'video': video_path.name,
                     'audio': audio_path.name,
                     'output': output_path.name,
-                    'time_mode': time_mode,
+                    'min_start': min_start_time,
+                    'min_end_offset': min_end_offset,
                     'audio_volume': audio_volume
                 }
             )

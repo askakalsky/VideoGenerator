@@ -39,9 +39,9 @@ class VideoConfig:
 
     # Видео кодеки
     video_codec: str = 'libx264'
-    video_bitrate: str = '8000k'
-    crf: int = 18  # 0-51, меньше = лучше качество
-    preset: str = 'medium'  # ultrafast, fast, medium, slow, veryslow
+    video_bitrate: str = '12000k'
+    crf: int = 15
+    preset: str = 'slower'
 
     # Аудио кодеки
     audio_codec: str = 'aac'
@@ -51,7 +51,7 @@ class VideoConfig:
     pix_fmt: str = 'yuv420p'
     movflags: str = '+faststart'
     threads: int = 0  # 0 = авто
-    verbose: bool = False
+    # verbose: bool = False  # ❌ УДАЛЕНО - не поддерживается в MoviePy v2
 
     def validate(self):
         """Валидация параметров."""
@@ -69,17 +69,19 @@ class VideoConfig:
 
     def to_write_params(self) -> dict:
         """Преобразует конфиг в параметры для write_videofile."""
-        return {
+        params = {
             'codec': self.video_codec,
             'bitrate': self.video_bitrate,
             'preset': self.preset,
             'audio_codec': self.audio_codec,
             'audio_bitrate': self.audio_bitrate,
             'ffmpeg_params': ['-crf', str(self.crf), '-pix_fmt', self.pix_fmt],
-            'threads': self.threads if self.threads > 0 else None,
-            'verbose': self.verbose,
-            'logger': 'bar' if not self.verbose else None,
         }
+
+        if self.threads > 0:
+            params['threads'] = self.threads
+
+        return params
 
 
 @dataclass
@@ -88,7 +90,7 @@ class AudioSettings:
 
     # Временные параметры
     min_start_time: float = 5.0  # Минимальное время начала (сек)
-    max_start_time: Optional[float] = None  # Максимальное время начала
+    min_end_offset: float = 10.0  # Минимальное время от конца видео (сек)
     # Конкретное время (игнорирует случайность)
     specific_start_time: Optional[float] = None
 
@@ -109,8 +111,8 @@ class AudioSettings:
         if self.min_start_time < 0:
             raise ValueError("min_start_time не может быть отрицательным")
 
-        if self.max_start_time is not None and self.max_start_time < self.min_start_time:
-            raise ValueError("max_start_time должен быть >= min_start_time")
+        if self.min_end_offset < 0:
+            raise ValueError("min_end_offset не может быть отрицательным")
 
         if self.specific_start_time is not None and self.specific_start_time < 0:
             raise ValueError("specific_start_time не может быть отрицательным")
@@ -301,29 +303,29 @@ class VideoAudioMixer:
             return start_time
 
         # Проверяем, что видео достаточно длинное
-        if video_duration < audio_duration:
+        min_required_duration = audio_duration + \
+            self.audio_settings.min_start_time + self.audio_settings.min_end_offset
+        if video_duration < min_required_duration:
             raise ValueError(
-                f"Видео ({video_duration:.1f}s) короче аудио ({audio_duration:.1f}s)"
+                f"Видео слишком короткое ({format_time(video_duration)}). "
+                f"Требуется минимум {format_time(min_required_duration)} "
+                f"(аудио: {format_time(audio_duration)} + "
+                f"мин.начало: {format_time(self.audio_settings.min_start_time)} + "
+                f"мин.от конца: {format_time(self.audio_settings.min_end_offset)})"
             )
 
-        # Вычисляем диапазон возможных позиций
-        max_possible_start = video_duration - audio_duration
-
-        # Применяем ограничения
+        # Вычисляем допустимый диапазон
         min_start = self.audio_settings.min_start_time
-        max_start = self.audio_settings.max_start_time
-
-        if max_start is None:
-            max_start = max_possible_start
-        else:
-            max_start = min(max_start, max_possible_start)
+        max_end_time = video_duration - self.audio_settings.min_end_offset
+        max_start = max_end_time - audio_duration
 
         # Проверяем валидность диапазона
         if min_start > max_start:
             raise ValueError(
-                f"Невозможно разместить аудио: min_start ({min_start:.1f}s) > "
-                f"max_start ({max_start:.1f}s). "
-                f"Увеличьте длительность видео или уменьшите min_start."
+                f"Невозможно разместить аудио:\n"
+                f"  Минимальная точка начала: {format_time(min_start)}\n"
+                f"  Максимальная точка начала: {format_time(max_start)}\n"
+                f"  Увеличьте длительность видео или уменьшите ограничения."
             )
 
         # Устанавливаем seed если указан
@@ -335,7 +337,14 @@ class VideoAudioMixer:
 
         logger.info(f"🎲 Случайное время начала: {format_time(start_time)}")
         logger.info(
-            f"   └─ Диапазон: {format_time(min_start)} - {format_time(max_start)}")
+            f"   ├─ Допустимый диапазон: {format_time(min_start)} - {format_time(max_start)}"
+        )
+        logger.info(
+            f"   ├─ Конец аудио в видео: {format_time(start_time + audio_duration)}"
+        )
+        logger.info(
+            f"   └─ Итоговое видео: {format_time(audio_duration)}"
+        )
 
         return start_time
 
@@ -346,34 +355,27 @@ class VideoAudioMixer:
     ) -> AudioFileClip:
         """
         Применяет эффекты к аудио (громкость, fade).
-
-        Args:
-            audio: Аудио клип
-            duration: Длительность аудио
-
-        Returns:
-            AudioFileClip: Обработанный клип
         """
-        # Применяем громкость - ИСПРАВЛЕНО для MoviePy v2
+        # Применяем громкость - MoviePy v2
         if self.audio_settings.audio_volume != 1.0:
             logger.info(
                 f"🔊 Громкость аудио: {self.audio_settings.audio_volume * 100:.0f}%")
-            # MoviePy v2: используем multiply_volume вместо volumex
-            audio = audio.multiply_volume(self.audio_settings.audio_volume)
+            audio = audio.multiply_volume(
+                self.audio_settings.audio_volume)  # ✅ Правильно
 
         # Применяем fade-in
         if self.audio_settings.fade_in_duration > 0:
             fade_duration = min(
                 self.audio_settings.fade_in_duration, duration / 2)
             logger.info(f"📈 Fade-in: {fade_duration:.1f}s")
-            audio = audio.audio_fadein(fade_duration)
+            audio = audio.audio_fadein(fade_duration)  # ✅ Правильно
 
         # Применяем fade-out
         if self.audio_settings.fade_out_duration > 0:
             fade_duration = min(
                 self.audio_settings.fade_out_duration, duration / 2)
             logger.info(f"📉 Fade-out: {fade_duration:.1f}s")
-            audio = audio.audio_fadeout(fade_duration)
+            audio = audio.audio_fadeout(fade_duration)  # ✅ Правильно
 
         return audio
 
@@ -466,8 +468,8 @@ class VideoAudioMixer:
             # ОБРАБОТКА
             # ================================================================
 
-            # Вырезаем фрагмент видео
-            video_clip = video.subclip(start_time, end_time)
+            # Вырезаем фрагмент видео - ИСПРАВЛЕНО для MoviePy v2
+            video_clip = video.subclipped(start_time, end_time)
 
             # Применяем эффекты к аудио
             logger.info("")
@@ -494,8 +496,8 @@ class VideoAudioMixer:
                     logger.info("🔇 Отключаю оригинальное аудио")
                 final_audio = processed_audio
 
-            # Применяем аудио к видео
-            final_clip = video_clip.set_audio(final_audio)
+            # Применяем аудио к видео - ИСПРАВЛЕНО для MoviePy v2
+            final_clip = video_clip.with_audio(final_audio)
 
             # ================================================================
             # СОХРАНЕНИЕ
@@ -611,6 +613,12 @@ def parse_arguments():
         help='Минимальное время начала аудио (секунды)'
     )
     time_group.add_argument(
+        '--min-end-offset',
+        type=float,
+        default=10.0,
+        help='Минимальное время от конца видео (секунды)'
+    )
+    time_group.add_argument(
         '--max-start',
         type=float,
         default=None,
@@ -687,7 +695,7 @@ def parse_arguments():
     misc_group.add_argument(
         '--verbose',
         action='store_true',
-        help='Подробный вывод'
+        help='Подробный вывод в логи (не влияет на MoviePy)'  # ✅ Уточнение
     )
     misc_group.add_argument(
         '--debug',
@@ -712,7 +720,7 @@ def main():
         # Создание конфигураций
         audio_settings = AudioSettings(
             min_start_time=args.min_start,
-            max_start_time=args.max_start,
+            min_end_offset=args.min_end_offset,
             specific_start_time=args.start_at,
             audio_volume=args.audio_volume,
             original_volume=args.keep_original,
@@ -726,7 +734,6 @@ def main():
             audio_bitrate=args.audio_bitrate,
             crf=args.crf,
             preset=args.preset,
-            verbose=args.verbose
         )
 
         # Создание процессора
