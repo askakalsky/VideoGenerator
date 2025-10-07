@@ -1,29 +1,48 @@
 """
-Страница модуля создания субтитров TikTok
+Страница модуля создания субтитров TikTok с поддержкой GPU-ускорения
 """
 
-from modules.tiktok_subs import TikTokSubtitles, WhisperConfig, SubtitleStyle, VideoConfig
+from modules.tiktok_subs import (
+    TikTokSubtitles, WhisperConfig, SubtitleStyle, VideoConfig,
+    detect_gpu_capabilities, get_recommended_hardware
+)
 import streamlit as st
 from pathlib import Path
 import sys
 
 sys.path.append(str(Path(__file__).parent.parent / 'modules'))
 
-
 st.set_page_config(page_title="TikTok Subtitles", page_icon="📝", layout="wide")
 
-# Константы
-PRESET_OPTIONS = ['ultrafast', 'superfast', 'veryfast',
-                  'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow']
+# ============================================================================
+# КОНСТАНТЫ
+# ============================================================================
 
+# GPU информация (кешируется)
+GPU_CAPABILITIES = None
+
+
+def get_gpu_info():
+    """Кеширует информацию о GPU"""
+    global GPU_CAPABILITIES
+    if GPU_CAPABILITIES is None:
+        GPU_CAPABILITIES = {
+            'available': detect_gpu_capabilities(),
+            'recommended': get_recommended_hardware()
+        }
+    return GPU_CAPABILITIES
+
+
+# Пресеты качества с GPU/CPU вариантами
 QUALITY_PRESETS = {
-    'Максимальное': {'crf': 15, 'preset': 'veryslow', 'bitrate': '12000k'},
-    'Высокое': {'crf': 18, 'preset': 'slow', 'bitrate': '10000k'},
-    'Среднее': {'crf': 20, 'preset': 'medium', 'bitrate': '8000k'},
-    'Быстрое': {'crf': 23, 'preset': 'fast', 'bitrate': '6000k'}
+    '🚀 GPU Ультра': {'crf': 15, 'preset': 'hq', 'bitrate': '12000k', 'hardware': True},
+    '⚡ GPU Быстро': {'crf': 20, 'preset': 'fast', 'bitrate': '8000k', 'hardware': True},
+    '💎 CPU Максимум': {'crf': 15, 'preset': 'slow', 'bitrate': '12000k', 'hardware': False},
+    '🎯 CPU Баланс': {'crf': 18, 'preset': 'medium', 'bitrate': '8000k', 'hardware': False},
+    '⏱️ CPU Быстро': {'crf': 23, 'preset': 'fast', 'bitrate': '6000k', 'hardware': False},
 }
 
-# Шрифты с поддержкой кириллицы и коммерческим использованием
+# Шрифты с поддержкой кириллицы
 FONTS = [
     'Arial',
     'Arial Black',
@@ -40,7 +59,7 @@ FONTS = [
     'Segoe UI Black',
     'Segoe UI Semibold',
     'Century Gothic',
-    'Orchidea Pro Medium Italic',  # Специальный шрифт
+    'Orchidea Pro Medium Italic',
     'Montserrat',
     'Roboto',
     'Open Sans',
@@ -49,6 +68,10 @@ FONTS = [
     'Bebas Neue'
 ]
 
+
+# ============================================================================
+# ГЛАВНАЯ ФУНКЦИЯ
+# ============================================================================
 
 def main():
     st.title("📝 Субтитры в стиле TikTok")
@@ -60,7 +83,9 @@ def main():
     main_col, preview_col = st.columns([2, 1])
 
     with main_col:
-        # Секция выбора видео
+        # ====================================================================
+        # ВЫБОР ВИДЕО
+        # ====================================================================
         st.subheader("📁 Видео файл")
 
         video_source = st.radio(
@@ -97,7 +122,9 @@ def main():
 
         st.markdown("---")
 
-        # Две колонки для параметров
+        # ====================================================================
+        # ПАРАМЕТРЫ WHISPER И СТИЛЬ
+        # ====================================================================
         param_col1, param_col2 = st.columns(2)
 
         with param_col1:
@@ -179,56 +206,214 @@ def main():
 
         st.markdown("---")
 
-        # Настройки качества
-        with st.expander("🎬 Настройки качества видео", expanded=False):
-            quality_preset = st.selectbox(
-                "Пресет качества",
-                options=list(QUALITY_PRESETS.keys()),
-                index=0,  # Максимальное по умолчанию
-                help="Максимальное = медленно но отличное качество\nБыстрое = быстро но ниже качество"
+        # ====================================================================
+        # НАСТРОЙКИ КАЧЕСТВА И GPU
+        # ====================================================================
+        with st.expander("🎬 Настройки качества видео", expanded=True):
+            # Информация о GPU
+            gpu_info = get_gpu_info()
+            has_gpu = any(gpu_info['available'].values())
+
+            if has_gpu:
+                gpu_name = gpu_info['recommended'].upper()
+                st.success(f"✅ GPU обнаружен: {gpu_name}")
+
+                # Информация о типах GPU
+                gpu_types = []
+                if gpu_info['available']['nvenc']:
+                    gpu_types.append('NVIDIA NVENC')
+                if gpu_info['available']['qsv']:
+                    gpu_types.append('Intel QSV')
+                if gpu_info['available']['amf']:
+                    gpu_types.append('AMD AMF')
+                if gpu_info['available']['videotoolbox']:
+                    gpu_types.append('Apple VideoToolbox')
+
+                st.info(f"💡 Доступно: {', '.join(gpu_types)}\n\n"
+                        f"⚡ GPU рендеринг в **5-10 раз быстрее** CPU!")
+            else:
+                st.warning(
+                    "⚠️ GPU не обнаружен, будет использоваться CPU (медленнее)")
+                st.info("ℹ️ Для GPU-ускорения требуется:\n"
+                        "- NVIDIA GPU (GTX 600+/RTX)\n"
+                        "- Intel GPU (HD Graphics 2000+)\n"
+                        "- AMD GPU (RX 400+)\n"
+                        "- Apple M1/M2/M3")
+
+            st.markdown("---")
+
+            # Выбор режима кодирования
+            use_hardware = st.checkbox(
+                "⚡ Использовать GPU ускорение",
+                value=has_gpu,
+                disabled=not has_gpu,
+                help="Значительно ускоряет рендеринг, но требует поддержку GPU"
             )
 
-            # Получаем настройки из выбранного пресета
+            # Фильтруем пресеты
+            if has_gpu:
+                available_presets = QUALITY_PRESETS
+            else:
+                # Только CPU пресеты если нет GPU
+                available_presets = {
+                    k: v for k, v in QUALITY_PRESETS.items()
+                    if not v.get('hardware', False)
+                }
+
+            # Автовыбор пресета по умолчанию
+            if use_hardware and has_gpu:
+                default_preset = '🚀 GPU Ультра'
+            else:
+                default_preset = '🎯 CPU Баланс'
+
+            preset_keys = list(available_presets.keys())
+            default_index = preset_keys.index(
+                default_preset) if default_preset in preset_keys else 0
+
+            quality_preset = st.selectbox(
+                "Пресет качества",
+                options=preset_keys,
+                index=default_index,
+                help="GPU: быстрее, CPU: медленнее но универсальнее"
+            )
+
             preset_config = QUALITY_PRESETS[quality_preset]
             crf_default = preset_config['crf']
             preset_default = preset_config['preset']
             bitrate_default = preset_config['bitrate']
+            use_hw = preset_config.get('hardware', False)
 
-            st.info(
-                f"📊 CRF={crf_default} | Preset={preset_default} | Bitrate={bitrate_default}")
+            # Информация о настройках
+            if use_hw and has_gpu:
+                st.info(
+                    f"📊 **GPU режим** | CRF={crf_default} | Preset={preset_default} | Bitrate={bitrate_default}")
+            else:
+                st.info(
+                    f"📊 **CPU режим** | CRF={crf_default} | Preset={preset_default} | Bitrate={bitrate_default}")
 
-            # Расширенные настройки
+            # ================================================================
+            # РАСШИРЕННЫЕ НАСТРОЙКИ
+            # ================================================================
             show_advanced = st.checkbox(
                 "⚙️ Показать расширенные настройки", value=False)
 
             if show_advanced:
-                crf = st.slider(
-                    "CRF (0-51, меньше=лучше)",
-                    0, 51, crf_default,
-                    key='crf_subs',
-                    help="0=lossless, 15-18=отличное, 20-23=хорошее, 28+=среднее"
-                )
-                preset = st.selectbox(
-                    "Preset скорости",
-                    options=PRESET_OPTIONS,
-                    index=PRESET_OPTIONS.index(preset_default),
-                    key='preset_subs',
-                    help="veryslow=лучшее качество (медленно), ultrafast=худшее (быстро)"
-                )
-                video_bitrate = st.text_input(
-                    "Битрейт видео",
-                    value=bitrate_default,
-                    key='bitrate_subs',
-                    help="Примеры: 8000k, 10M, 15000k"
+                st.markdown("---")
+
+                if use_hardware and has_gpu:
+                    # GPU параметры
+                    st.markdown("**🚀 GPU Настройки**")
+
+                    # Выбор типа GPU
+                    available_hw_types = []
+                    hw_type_names = {
+                        'nvenc': 'NVIDIA NVENC',
+                        'qsv': 'Intel QuickSync',
+                        'amf': 'AMD AMF',
+                        'videotoolbox': 'Apple VideoToolbox'
+                    }
+
+                    for hw_type, available in gpu_info['available'].items():
+                        if available:
+                            available_hw_types.append(hw_type)
+
+                    if len(available_hw_types) > 1:
+                        hardware_type = st.selectbox(
+                            "Тип GPU",
+                            options=available_hw_types,
+                            index=available_hw_types.index(
+                                gpu_info['recommended']) if gpu_info['recommended'] in available_hw_types else 0,
+                            format_func=lambda x: hw_type_names.get(
+                                x, x.upper()),
+                            help="Выберите тип GPU-ускорения"
+                        )
+                    else:
+                        hardware_type = available_hw_types[0] if available_hw_types else 'nvenc'
+                        st.info(
+                            f"Тип GPU: **{hw_type_names.get(hardware_type, hardware_type.upper())}**")
+
+                    # Пресеты для выбранного GPU
+                    if hardware_type == 'nvenc':
+                        preset_options = ['slow', 'medium', 'fast',
+                                          'hp', 'hq', 'bd', 'll', 'llhq', 'llhp']
+                        preset_help = "**hq** = лучшее качество, **fast** = быстрее, **ll** = low latency"
+                        default_preset_idx = preset_options.index(
+                            preset_default) if preset_default in preset_options else 1
+                    elif hardware_type == 'qsv':
+                        preset_options = [
+                            'veryslow', 'slower', 'slow', 'medium', 'fast', 'faster', 'veryfast']
+                        preset_help = "Стандартные пресеты Intel QSV"
+                        default_preset_idx = preset_options.index(
+                            preset_default) if preset_default in preset_options else 3
+                    elif hardware_type == 'amf':
+                        preset_options = ['slow', 'balanced', 'fast']
+                        preset_help = "AMD AMF пресеты качества"
+                        default_preset_idx = preset_options.index(
+                            preset_default) if preset_default in preset_options else 1
+                    else:
+                        preset_options = ['slow', 'medium', 'fast']
+                        preset_help = "VideoToolbox пресеты"
+                        default_preset_idx = 1
+
+                    preset = st.selectbox(
+                        "GPU Preset",
+                        options=preset_options,
+                        index=default_preset_idx,
+                        help=preset_help
+                    )
+                else:
+                    # CPU параметры
+                    st.markdown("**🖥️ CPU Настройки**")
+                    hardware_type = 'nvenc'  # Не используется, но нужно для конфига
+
+                    preset_options = ['ultrafast', 'superfast', 'veryfast', 'faster',
+                                      'fast', 'medium', 'slow', 'slower', 'veryslow']
+                    preset = st.selectbox(
+                        "CPU Preset",
+                        options=preset_options,
+                        index=preset_options.index(
+                            preset_default) if preset_default in preset_options else 5,
+                        help="**veryslow** = лучшее сжатие (медленно), **ultrafast** = быстро (больше размер)"
+                    )
+
+                # Общие параметры качества
+                col_crf, col_bitrate = st.columns(2)
+
+                with col_crf:
+                    crf = st.slider(
+                        "CRF (качество)",
+                        0, 51, crf_default,
+                        help="Меньше = лучше качество, больше файл\n\n"
+                             "15-18 = отличное, 20-23 = хорошее, 28+ = среднее"
+                    )
+
+                with col_bitrate:
+                    video_bitrate = st.text_input(
+                        "Битрейт видео",
+                        value=bitrate_default,
+                        help="Примеры: 8000k, 10M, 15000k"
+                    )
+
+                audio_bitrate = st.select_slider(
+                    "Битрейт аудио",
+                    options=['128k', '192k', '256k', '320k'],
+                    value='320k',
+                    help="320k = максимальное качество"
                 )
             else:
+                # Используем значения из пресета
                 crf = crf_default
                 preset = preset_default
                 video_bitrate = bitrate_default
+                audio_bitrate = '320k'
+                hardware_type = gpu_info['recommended'] if (
+                    use_hardware and has_gpu) else 'nvenc'
 
         st.markdown("---")
 
-        # Кнопка запуска
+        # ====================================================================
+        # КНОПКА ЗАПУСКА
+        # ====================================================================
         process_button = st.button(
             "🚀 Создать субтитры",
             type="primary",
@@ -236,7 +421,9 @@ def main():
             disabled=not video_file
         )
 
-    # Правая колонка - превью видео
+    # ========================================================================
+    # ПРАВАЯ КОЛОНКА - ПРЕВЬЮ
+    # ========================================================================
     with preview_col:
         st.subheader("📱 Превью")
 
@@ -275,7 +462,9 @@ def main():
             with preview_placeholder.container():
                 st.info("👈 Выберите видео для начала работы")
 
-    # Обработка при нажатии кнопки
+    # ========================================================================
+    # ОБРАБОТКА
+    # ========================================================================
     if process_button and video_file:
         # Подготовка директорий
         temp_dir = Path('assets/temp')
@@ -302,7 +491,9 @@ def main():
         final_language = None if language == 'auto' else language
         final_device = None if device == 'auto' else device
 
-        # Конфигурации
+        # ====================================================================
+        # СОЗДАНИЕ КОНФИГУРАЦИЙ
+        # ====================================================================
         whisper_config = WhisperConfig(
             model=model,
             language=final_language,
@@ -321,13 +512,18 @@ def main():
         )
 
         video_config = VideoConfig(
+            use_hardware=use_hardware and has_gpu,
+            hardware_type=hardware_type if (
+                use_hardware and has_gpu) else 'nvenc',
             crf=crf,
             preset=preset,
             video_bitrate=video_bitrate,
-            audio_bitrate='320k'  # Максимальное качество аудио
+            audio_bitrate=audio_bitrate if show_advanced else '320k'
         )
 
-        # UI для прогресса в левой колонке
+        # ====================================================================
+        # UI ДЛЯ ПРОГРЕССА
+        # ====================================================================
         with main_col:
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -354,14 +550,25 @@ def main():
             progress_bar.progress(100)
             status_text.text("✅ Готово!")
 
-            # Успешное завершение
-            st.success(f"✅ Видео с субтитрами создано: {output_path.name}")
+            # ================================================================
+            # УСПЕШНОЕ ЗАВЕРШЕНИЕ
+            # ================================================================
+            encoding_type = "GPU" if (use_hardware and has_gpu) else "CPU"
+            st.success(
+                f"✅ Видео с субтитрами создано ({encoding_type} кодирование): {output_path.name}")
 
             # Информация о файле
             if output_path.exists():
                 output_size_mb = output_path.stat().st_size / (1024 * 1024)
-                st.info(
-                    f"📊 Размер файла: {output_size_mb:.2f} MB | Качество: {quality_preset}")
+
+                info_text = f"📊 Размер: {output_size_mb:.2f} MB | "
+                info_text += f"Качество: {quality_preset} | "
+                info_text += f"Кодирование: {encoding_type}"
+
+                if use_hardware and has_gpu:
+                    info_text += f" ({hardware_type.upper()})"
+
+                st.info(info_text)
 
                 # Кнопки скачивания
                 col_dl1, col_dl2 = st.columns(2)
@@ -406,7 +613,8 @@ def main():
                         'language': final_language or 'auto',
                         'device': final_device or 'auto',
                         'quality': quality_preset,
-                        'font': font_name
+                        'font': font_name,
+                        'encoding': f"{encoding_type} ({hardware_type if use_hardware else 'libx264'})"
                     }
                 )
             except ImportError:
