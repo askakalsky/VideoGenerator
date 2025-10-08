@@ -1,13 +1,14 @@
 """
 Модуль для добавления фоновой музыки к видео.
-Поддерживает настройку громкости, зацикливание музыки и сохранение качества видео.
+Поддерживает настройку громкости, зацикливание музыки и сохранение качества.
+MoviePy v2 совместимая версия.
 """
 
 import logging
 import sys
 from pathlib import Path
 from typing import Optional, Union
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from contextlib import contextmanager
 import argparse
 
@@ -15,6 +16,7 @@ import argparse
 # ИМПОРТЫ MOVIEPY V2
 # ============================================================================
 from moviepy import VideoFileClip, AudioFileClip, CompositeAudioClip
+from moviepy.audio.fx import MultiplyVolume, AudioFadeIn, AudioFadeOut
 
 # ============================================================================
 # НАСТРОЙКА ЛОГИРОВАНИЯ
@@ -38,9 +40,9 @@ class VideoConfig:
 
     # Видео параметры
     video_codec: str = 'libx264'
-    video_bitrate: str = '8000k'  # Высокое качество
-    preset: str = 'medium'  # ultrafast, fast, medium, slow, veryslow
-    crf: int = 18  # 0-51, меньше = лучше (18-23 оптимально)
+    video_bitrate: str = '8000k'
+    preset: str = 'medium'
+    crf: int = 18
 
     # Аудио параметры
     audio_codec: str = 'aac'
@@ -60,8 +62,6 @@ class VideoConfig:
             'audio_codec': self.audio_codec,
             'audio_bitrate': self.audio_bitrate,
             'threads': self.threads,
-            'write_logfile': self.write_logfile,
-            'verbose': self.verbose,
             'logger': 'bar' if not self.verbose else None,
             'ffmpeg_params': ['-crf', str(self.crf)]
         }
@@ -73,8 +73,8 @@ class AudioSettings:
     music_volume: float = 0.1
     voice_volume: float = 1.0
     loop_music: bool = True
-    fade_in_duration: float = 0.0  # Секунды
-    fade_out_duration: float = 0.0  # Секунды
+    fade_in_duration: float = 0.0
+    fade_out_duration: float = 0.0
 
     def __post_init__(self):
         """Валидация после инициализации."""
@@ -95,10 +95,10 @@ class AudioSettings:
             )
 
         if self.fade_in_duration < 0:
-            raise ValueError(f"fade_in_duration не может быть отрицательным")
+            raise ValueError("fade_in_duration не может быть отрицательным")
 
         if self.fade_out_duration < 0:
-            raise ValueError(f"fade_out_duration не может быть отрицательным")
+            raise ValueError("fade_out_duration не может быть отрицательным")
 
 
 # ============================================================================
@@ -106,8 +106,7 @@ class AudioSettings:
 # ============================================================================
 
 SUPPORTED_VIDEO_FORMATS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv'}
-SUPPORTED_AUDIO_FORMATS = {'.mp3', '.wav',
-                           '.aac', '.m4a', '.flac', '.ogg', '.wma'}
+SUPPORTED_AUDIO_FORMATS = {'.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg', '.wma'}
 
 
 # ============================================================================
@@ -116,15 +115,7 @@ SUPPORTED_AUDIO_FORMATS = {'.mp3', '.wav',
 
 @contextmanager
 def managed_clips(*clips):
-    """
-    Контекстный менеджер для автоматического закрытия клипов.
-
-    Args:
-        *clips: MoviePy клипы для управления
-
-    Yields:
-        tuple: Переданные клипы
-    """
+    """Контекстный менеджер для автоматического закрытия клипов."""
     try:
         yield clips
     finally:
@@ -137,16 +128,7 @@ def managed_clips(*clips):
 
 
 def validate_file_exists(file_path: Path, file_type: str = "Файл"):
-    """
-    Проверяет существование файла.
-
-    Args:
-        file_path: Путь к файлу
-        file_type: Тип файла для сообщения об ошибке
-
-    Raises:
-        FileNotFoundError: Если файл не найден
-    """
+    """Проверяет существование файла."""
     if not file_path.exists():
         raise FileNotFoundError(f"{file_type} не найден: {file_path}")
 
@@ -155,17 +137,7 @@ def validate_file_exists(file_path: Path, file_type: str = "Файл"):
 
 
 def validate_file_format(file_path: Path, supported_formats: set, file_type: str):
-    """
-    Проверяет формат файла.
-
-    Args:
-        file_path: Путь к файлу
-        supported_formats: Множество поддерживаемых расширений
-        file_type: Тип файла для сообщения
-
-    Raises:
-        ValueError: Если формат не поддерживается
-    """
+    """Проверяет формат файла."""
     suffix = file_path.suffix.lower()
     if suffix not in supported_formats:
         raise ValueError(
@@ -180,31 +152,17 @@ def get_safe_output_path(
     suffix: str = "_with_music",
     force: bool = False
 ) -> Path:
-    """
-    Генерирует безопасный путь для выходного файла.
-
-    Args:
-        input_path: Путь к входному файлу
-        output_path: Желаемый путь вывода (опционально)
-        suffix: Суффикс для автогенерации имени
-        force: Разрешить перезапись существующих файлов
-
-    Returns:
-        Path: Безопасный путь для сохранения
-    """
+    """Генерирует безопасный путь для выходного файла."""
     if output_path is None:
-        output_path = input_path.parent / \
-            f"{input_path.stem}{suffix}{input_path.suffix}"
+        output_path = input_path.parent / f"{input_path.stem}{suffix}{input_path.suffix}"
     else:
         output_path = Path(output_path)
 
-    # Если файл существует и не разрешена перезапись
     if output_path.exists() and not force:
         counter = 1
         original_stem = output_path.stem
         while output_path.exists():
-            output_path = output_path.parent / \
-                f"{original_stem}_{counter}{output_path.suffix}"
+            output_path = output_path.parent / f"{original_stem}_{counter}{output_path.suffix}"
             counter += 1
         logger.warning(f"Файл существует, сохраняю как: {output_path.name}")
 
@@ -212,15 +170,7 @@ def get_safe_output_path(
 
 
 def format_duration(seconds: float) -> str:
-    """
-    Форматирует длительность в читаемый вид.
-
-    Args:
-        seconds: Длительность в секундах
-
-    Returns:
-        str: Отформатированная строка (например, "1:23:45")
-    """
+    """Форматирует длительность в читаемый вид."""
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     secs = int(seconds % 60)
@@ -261,16 +211,6 @@ def add_background_music(
         FileNotFoundError: Если входные файлы не найдены
         ValueError: Если параметры некорректны
         RuntimeError: Если произошла ошибка обработки
-
-    Example:
-        >>> from pathlib import Path
-        >>> settings = AudioSettings(music_volume=0.2, voice_volume=1.0)
-        >>> output = add_background_music(
-        ...     video_path="input.mp4",
-        ...     music_path="music.mp3",
-        ...     audio_settings=settings
-        ... )
-        >>> print(f"Создан файл: {output}")
     """
     # Инициализация параметров по умолчанию
     if audio_settings is None:
@@ -293,8 +233,7 @@ def add_background_music(
     # Определение пути вывода
     if output_path:
         output_path = Path(output_path).resolve()
-    output_path = get_safe_output_path(
-        video_path, output_path, force=force_overwrite)
+    output_path = get_safe_output_path(video_path, output_path, force=force_overwrite)
 
     # Инициализация переменных для finally блока
     video = None
@@ -320,45 +259,44 @@ def add_background_music(
         logger.info(f"   └─ Длительность: {format_duration(music_duration)}")
 
         # ====================================================================
-        # ОБРАБОТКА МУЗЫКИ
+        # ОБРАБОТКА МУЗЫКИ (MoviePy v2)
         # ====================================================================
 
         # Зацикливание музыки если необходимо
         if audio_settings.loop_music and music_duration < video_duration:
             loops_needed = int(video_duration / music_duration) + 1
             logger.info(f"🔁 Зацикливаю музыку (повторов: {loops_needed})")
-            # В MoviePy v2 метод loop() работает так же
-            music = music.loop(n=loops_needed)
+            # MoviePy v2: loop() → looped()
+            music = music.with_effects([]).looped(n=loops_needed)
 
         # Обрезка музыки под длительность видео
         if music.duration > video_duration:
-            logger.info(
-                f"✂️  Обрезаю музыку до {format_duration(video_duration)}")
-            # В MoviePy v2 используем subclip вместо subclipped
-            music = music.subclip(0, video_duration)
+            logger.info(f"✂️  Обрезаю музыку до {format_duration(video_duration)}")
+            # MoviePy v2: subclip() → subclipped()
+            music = music.subclipped(0, video_duration)
 
         # ====================================================================
         # ПРИМЕНЕНИЕ ЭФФЕКТОВ К МУЗЫКЕ (MoviePy v2)
         # ====================================================================
 
-        # Настройка громкости музыки - ИСПРАВЛЕНО для v2
+        # Настройка громкости музыки
         if audio_settings.music_volume != 1.0:
             logger.info(
                 f"🔊 Устанавливаю громкость музыки: {audio_settings.music_volume * 100:.0f}%"
             )
-            # MoviePy v2: используем multiply_volume вместо volumex
-            music = music.multiply_volume(audio_settings.music_volume)
+            # MoviePy v2: используем with_effects и MultiplyVolume
+            music = music.with_effects([MultiplyVolume(audio_settings.music_volume)])
 
         # Fade in/out для музыки
         if audio_settings.fade_in_duration > 0:
-            logger.info(
-                f"📈 Применяю fade-in: {audio_settings.fade_in_duration}s")
-            music = music.audio_fadein(audio_settings.fade_in_duration)
+            logger.info(f"📈 Применяю fade-in: {audio_settings.fade_in_duration}s")
+            # MoviePy v2: используем with_effects и AudioFadeIn
+            music = music.with_effects([AudioFadeIn(audio_settings.fade_in_duration)])
 
         if audio_settings.fade_out_duration > 0:
-            logger.info(
-                f"📉 Применяю fade-out: {audio_settings.fade_out_duration}s")
-            music = music.audio_fadeout(audio_settings.fade_out_duration)
+            logger.info(f"📉 Применяю fade-out: {audio_settings.fade_out_duration}s")
+            # MoviePy v2: используем with_effects и AudioFadeOut
+            music = music.with_effects([AudioFadeOut(audio_settings.fade_out_duration)])
 
         # ====================================================================
         # ОБРАБОТКА АУДИО ИЗ ВИДЕО
@@ -368,21 +306,19 @@ def add_background_music(
             logger.info("🎤 Обрабатываю оригинальное аудио из видео")
             voice = video.audio
 
-            # Настройка громкости голоса - ИСПРАВЛЕНО для v2
+            # Настройка громкости голоса
             if audio_settings.voice_volume != 1.0:
                 logger.info(
                     f"🔊 Устанавливаю громкость голоса: {audio_settings.voice_volume * 100:.0f}%"
                 )
-                # MoviePy v2: используем multiply_volume вместо volumex
-                voice = voice.multiply_volume(audio_settings.voice_volume)
+                # MoviePy v2: используем with_effects и MultiplyVolume
+                voice = voice.with_effects([MultiplyVolume(audio_settings.voice_volume)])
 
             # Микширование аудио
             logger.info("🎚️  Микширую голос и музыку")
             final_audio = CompositeAudioClip([voice, music])
         else:
-            logger.warning(
-                "⚠️  В видео отсутствует аудиодорожка, добавляю только музыку"
-            )
+            logger.warning("⚠️  В видео отсутствует аудиодорожка, добавляю только музыку")
             final_audio = music
 
         # ====================================================================
@@ -390,8 +326,8 @@ def add_background_music(
         # ====================================================================
 
         logger.info("🎬 Создаю финальное видео с новым аудио")
-        # В MoviePy v2 метод set_audio работает так же
-        final_video = video.set_audio(final_audio)
+        # MoviePy v2: set_audio() → with_audio()
+        final_video = video.with_audio(final_audio)
 
         # ====================================================================
         # СОХРАНЕНИЕ
@@ -460,104 +396,43 @@ def parse_arguments():
     )
 
     # Обязательные аргументы
-    parser.add_argument(
-        'video',
-        help='Путь к видео файлу'
-    )
-    parser.add_argument(
-        'music',
-        help='Путь к файлу фоновой музыки'
-    )
+    parser.add_argument('video', help='Путь к видео файлу')
+    parser.add_argument('music', help='Путь к файлу фоновой музыки')
 
     # Опциональные аргументы - Пути
     path_group = parser.add_argument_group('Пути и файлы')
-    path_group.add_argument(
-        '-o', '--output',
-        help='Путь для сохранения результата',
-        default=None
-    )
-    path_group.add_argument(
-        '--force',
-        action='store_true',
-        help='Перезаписать выходной файл если существует'
-    )
+    path_group.add_argument('-o', '--output', help='Путь для сохранения результата', default=None)
+    path_group.add_argument('--force', action='store_true', help='Перезаписать выходной файл если существует')
 
     # Аудио настройки
     audio_group = parser.add_argument_group('Настройки аудио')
-    audio_group.add_argument(
-        '-m', '--music-volume',
-        type=float,
-        default=0.1,
-        help='Громкость музыки (0.0-2.0, по умолчанию 0.1)'
-    )
-    audio_group.add_argument(
-        '-v', '--voice-volume',
-        type=float,
-        default=1.0,
-        help='Громкость голоса (0.0-2.0, по умолчанию 1.0)'
-    )
-    audio_group.add_argument(
-        '--no-loop',
-        action='store_true',
-        help='Не зацикливать музыку'
-    )
-    audio_group.add_argument(
-        '--fade-in',
-        type=float,
-        default=0.0,
-        help='Длительность fade-in для музыки (секунды)'
-    )
-    audio_group.add_argument(
-        '--fade-out',
-        type=float,
-        default=0.0,
-        help='Длительность fade-out для музыки (секунды)'
-    )
+    audio_group.add_argument('-m', '--music-volume', type=float, default=0.1,
+                            help='Громкость музыки (0.0-2.0, по умолчанию 0.1)')
+    audio_group.add_argument('-v', '--voice-volume', type=float, default=1.0,
+                            help='Громкость голоса (0.0-2.0, по умолчанию 1.0)')
+    audio_group.add_argument('--no-loop', action='store_true', help='Не зацикливать музыку')
+    audio_group.add_argument('--fade-in', type=float, default=0.0,
+                            help='Длительность fade-in для музыки (секунды)')
+    audio_group.add_argument('--fade-out', type=float, default=0.0,
+                            help='Длительность fade-out для музыки (секунды)')
 
     # Видео настройки
     video_group = parser.add_argument_group('Настройки видео')
-    video_group.add_argument(
-        '--video-bitrate',
-        default='8000k',
-        help='Битрейт видео (по умолчанию 8000k)'
-    )
-    video_group.add_argument(
-        '--audio-bitrate',
-        default='320k',
-        help='Битрейт аудио (по умолчанию 320k)'
-    )
-    video_group.add_argument(
-        '--crf',
-        type=int,
-        default=18,
-        help='CRF значение (0-51, меньше=лучше, по умолчанию 18)'
-    )
-    video_group.add_argument(
-        '--preset',
-        choices=['ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
-                 'medium', 'slow', 'slower', 'veryslow'],
-        default='medium',
-        help='Preset скорости кодирования (по умолчанию medium)'
-    )
+    video_group.add_argument('--video-bitrate', default='8000k', help='Битрейт видео (по умолчанию 8000k)')
+    video_group.add_argument('--audio-bitrate', default='320k', help='Битрейт аудио (по умолчанию 320k)')
+    video_group.add_argument('--crf', type=int, default=18,
+                            help='CRF значение (0-51, меньше=лучше, по умолчанию 18)')
+    video_group.add_argument('--preset',
+                            choices=['ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
+                                   'medium', 'slow', 'slower', 'veryslow'],
+                            default='medium', help='Preset скорости кодирования (по умолчанию medium)')
 
     # Дополнительные опции
     misc_group = parser.add_argument_group('Дополнительно')
-    misc_group.add_argument(
-        '--threads',
-        type=int,
-        default=4,
-        help='Количество потоков для кодирования (по умолчанию 4)'
-    )
-    misc_group.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Подробный вывод'
-    )
-    misc_group.add_argument(
-        '--debug',
-        action='store_true',
-        help='Режим отладки'
-    )
+    misc_group.add_argument('--threads', type=int, default=4,
+                           help='Количество потоков для кодирования (по умолчанию 4)')
+    misc_group.add_argument('--verbose', action='store_true', help='Подробный вывод')
+    misc_group.add_argument('--debug', action='store_true', help='Режим отладки')
 
     return parser.parse_args()
 
@@ -608,7 +483,7 @@ def main():
         )
 
         logger.info("=" * 60)
-        logger.info(f"🎉 УСПЕШНО ЗАВЕРШЕНО")
+        logger.info("🎉 УСПЕШНО ЗАВЕРШЕНО")
         logger.info(f"📁 Результат: {output_path}")
         logger.info("=" * 60)
 
