@@ -42,7 +42,7 @@ def main():
                 key='video_upload'
             )
         else:
-            downloads_dir = Path('assets/downloads')
+            downloads_dir = Path('assets/transcripted_videos')
             if downloads_dir.exists():
                 video_files = list(downloads_dir.glob('*.mp4')) + \
                     list(downloads_dir.glob('*.mov'))
@@ -188,7 +188,7 @@ def main():
             audio_path = audio_file
 
         # Путь вывода
-        output_dir = Path('assets/output')
+        output_dir = Path('assets/ready_videos')
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{video_path.stem}_with_music.mp4"
 

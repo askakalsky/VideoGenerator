@@ -468,7 +468,7 @@ def main():
     if process_button and video_file:
         # Подготовка директорий
         temp_dir = Path('assets/temp')
-        output_dir = Path('assets/output')
+        output_dir = Path('assets/transcripted_videos')
         temp_dir.mkdir(parents=True, exist_ok=True)
         output_dir.mkdir(parents=True, exist_ok=True)
 
