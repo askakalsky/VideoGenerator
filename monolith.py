@@ -1,16 +1,3 @@
-# Простой запуск (случайное видео и музыка):
-# python monolith.py assets/generated_audio/my_audio.mp3
-#
-# С указанием имени выходного файла:
-# python monolith.py assets/generated_audio/my_audio.mp3 -o cool_video.mp4
-#
-# С конкретными видео и музыкой:
-# python monolith.py assets/generated_audio/my_audio.mp3 --video assets/stock_videos/video1.mp4 --music assets/music/track1.mp3
-#
-# Без сохранения ASS субтитров:
-# python monolith.py assets/generated_audio/my_audio.mp3 --no-keep-ass
-
-
 """
 Единый скрипт для создания финального видео с субтитрами и музыкой.
 Выполняет ОДИН рендеринг с использованием GPU (NVENC).
@@ -27,6 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Union
 from dataclasses import dataclass
+import locale
 
 # Импорты из существующих модулей
 from modules.tiktok_subs import (
@@ -148,6 +136,63 @@ def format_time(seconds: float) -> str:
     minutes = int(seconds // 60)
     secs = int(seconds % 60)
     return f"{minutes}:{secs:02d}"
+
+
+def escape_ffmpeg_path(path: Path) -> str:
+    """
+    Экранирует путь для FFmpeg на Windows.
+    Конвертирует в абсолютный путь с правильными слешами.
+    """
+    # Получаем абсолютный путь
+    abs_path = path.resolve()
+
+    # На Windows используем обратные слеши и экранируем их для FFmpeg
+    path_str = str(abs_path)
+
+    # Заменяем обратные слеши на прямые для FFmpeg
+    # FFmpeg лучше работает с прямыми слешами даже на Windows
+    path_str = path_str.replace('\\', '/')
+
+    return path_str
+
+
+def run_ffmpeg_command(cmd: list, cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
+    """
+    Выполняет FFmpeg команду с правильной кодировкой для Windows.
+
+    Args:
+        cmd: Список аргументов команды
+        cwd: Рабочая директория
+
+    Returns:
+        CompletedProcess результат
+    """
+    # На Windows используем UTF-8 кодировку
+    encoding = 'utf-8' if sys.platform == 'win32' else None
+
+    # Логируем команду
+    logger.debug("FFmpeg команда:")
+    logger.debug(" ".join(str(x) for x in cmd))
+
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding=encoding,
+            errors='replace'  # Заменяем непонятные символы
+        )
+        return result
+
+    except subprocess.CalledProcessError as e:
+        # Логируем полный stderr для отладки
+        logger.error("FFmpeg STDERR (полный):")
+        if e.stderr:
+            for line in e.stderr.splitlines():
+                logger.error(f"  {line}")
+        raise
 
 
 # ============================================================================
@@ -306,10 +351,16 @@ def create_final_video(
     logger.info(f"   ├─ Битрейт видео: {VIDEO_BITRATE}")
     logger.info(f"   └─ Битрейт аудио: {AUDIO_BITRATE}")
 
-    # Построение filter_complex для FFmpeg
+    # Экранируем пути для FFmpeg
+    video_path_ffmpeg = escape_ffmpeg_path(video_path)
+    audio_path_ffmpeg = escape_ffmpeg_path(audio_text_path)
+    music_path_ffmpeg = escape_ffmpeg_path(music_path)
+    output_path_ffmpeg = escape_ffmpeg_path(output_path)
+
+    # Для ASS используем только имя файла (т.к. работаем в cwd)
     ass_name = ass_path.name
 
-    # Фильтр: микс аудио + прожиг субтитров
+    # Построение filter_complex для FFmpeg
     filter_complex = (
         # Зацикливаем и обрезаем музыку
         f"[2:a]volume={MUSIC_VOLUME},aloop=loop=-1:size=2e+09,atrim=0:{audio_duration}[music];"
@@ -325,14 +376,13 @@ def create_final_video(
     cmd = [
         'ffmpeg', '-y',
 
-        # Входы
-        # Начало вырезки (ПЕРЕД -i для точности)
-        '-ss', str(start_time),
-        '-i', str(video_path),            # Видео
+        # Входы (используем абсолютные пути)
+        '-ss', str(start_time),           # Начало вырезки
+        '-i', video_path_ffmpeg,          # Видео
         '-t', str(audio_duration),        # Длительность
-        '-i', str(audio_text_path),       # Аудиотекст
+        '-i', audio_path_ffmpeg,          # Аудиотекст
         '-stream_loop', '-1',             # Зацикливание музыки
-        '-i', str(music_path),            # Музыка
+        '-i', music_path_ffmpeg,          # Музыка
 
         # Обработка
         '-filter_complex', filter_complex,
@@ -358,7 +408,7 @@ def create_final_video(
         '-movflags', '+faststart',        # Быстрый старт для веб
 
         # Выход
-        str(output_path)
+        output_path_ffmpeg
     ]
 
     # Запуск FFmpeg
@@ -367,13 +417,7 @@ def create_final_video(
     logger.info(f"   └─ Рабочая директория: {ass_path.parent}")
 
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=ass_path.parent,  # Важно для корректной работы ASS
-            check=True,
-            capture_output=True,
-            text=True
-        )
+        result = run_ffmpeg_command(cmd, cwd=ass_path.parent)
 
         # Проверка результата
         if not output_path.exists():
@@ -411,10 +455,6 @@ def create_final_video(
         logger.error("❌ ОШИБКА РЕНДЕРИНГА")
         logger.error("=" * 80)
         logger.error(f"Код возврата: {e.returncode}")
-
-        if e.stderr:
-            logger.error("STDERR от FFmpeg:")
-            logger.error(e.stderr[-2000:])  # Последние 2000 символов
 
         # Удаляем поврежденный файл
         if output_path.exists():
