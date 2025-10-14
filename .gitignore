@@ -38,6 +38,7 @@ venv/
 env/
 ENV/
 .venv
+.env
 
 # IDE
 .vscode/
@@ -70,6 +71,7 @@ Thumbs.db
 # Config
 config/user_settings.json
 assets/history.json
+assets/generated_text/*.json
 
 # Models (Whisper)
 *.pt
