@@ -779,24 +779,37 @@ def create_video_from_audio(
     output_path_ffmpeg = escape_ffmpeg_path(output_path)
     ass_name = ass_path.name
 
+    # ✅ ИСПРАВЛЕННЫЙ filter_complex с явной обрезкой видео
     filter_complex = (
-        f"[2:a]volume={MUSIC_VOLUME},aloop=loop=-1:size=2e+09,atrim=0:{audio_duration}[music];"
-        f"[1:a]volume={AUDIO_VOLUME}[voice];"
+        # 1. Обрезаем видео до нужной длительности
+        f"[0:v]trim=duration={audio_duration},setpts=PTS-STARTPTS[v_trimmed];"
+        # 2. Зацикливаем и обрезаем музыку
+        f"[2:a]volume={MUSIC_VOLUME},aloop=loop=-1:size=2e+09,atrim=0:{audio_duration},asetpts=PTS-STARTPTS[music];"
+        # 3. Настраиваем громкость голоса и обрезаем
+        f"[1:a]volume={AUDIO_VOLUME},atrim=0:{audio_duration},asetpts=PTS-STARTPTS[voice];"
+        # 4. Микшируем голос + музыку
         f"[voice][music]amix=inputs=2:duration=first:dropout_transition=0[audio];"
-        f"[0:v]ass={ass_name}[video]"
+        # 5. Прожигаем субтитры на обрезанное видео
+        f"[v_trimmed]ass={ass_name}[video]"
     )
 
     cmd = [
         'ffmpeg', '-y',
+
+        # Входы
+        # Начало вырезки (применяется к видео)
         '-ss', str(start_time),
-        '-i', video_path_ffmpeg,
-        '-t', str(audio_duration),
-        '-i', audio_path_ffmpeg,
-        '-stream_loop', '-1',
-        '-i', music_path_ffmpeg,
+        '-i', video_path_ffmpeg,          # Видео
+        '-i', audio_path_ffmpeg,          # Аудиотекст
+        '-stream_loop', '-1',             # Зацикливание музыки
+        '-i', music_path_ffmpeg,          # Музыка
+
+        # Обработка
         '-filter_complex', filter_complex,
-        '-map', '[video]',
-        '-map', '[audio]',
+        '-map', '[video]',                # Видео с субтитрами
+        '-map', '[audio]',                # Микшированное аудио
+
+        # Кодирование видео (NVENC GPU)
         '-c:v', VIDEO_CODEC,
         '-preset', PRESET,
         '-rc', 'vbr',
@@ -805,10 +818,19 @@ def create_video_from_audio(
         '-maxrate', VIDEO_BITRATE,
         '-bufsize', '20M',
         '-gpu', '0',
+
+        # Кодирование аудио
         '-c:a', 'aac',
         '-b:a', AUDIO_BITRATE,
+
+        # Дополнительные параметры
         '-pix_fmt', 'yuv420p',
         '-movflags', '+faststart',
+
+        # ✅ ВАЖНО: Останавливаем когда закончится самый короткий поток
+        '-shortest',
+
+        # Выход
         output_path_ffmpeg
     ]
 
