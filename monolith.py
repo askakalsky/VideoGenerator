@@ -120,6 +120,15 @@ ELEVENLABS_MODEL = "v3"       # Модель по умолчанию
 # Настройки Gemini
 GEMINI_MODEL = "gemini-2.0-flash-exp"
 
+# Поддерживаемые музыкальные стили
+MUSIC_STYLES = {
+    'relaxed',
+    'sad',
+    'scandal',
+    'scary',
+    'documentary'
+}
+
 # ============================================================================
 # ГЕНЕРАЦИЯ ТЕКСТА (GEMINI)
 # ============================================================================
@@ -243,13 +252,24 @@ class StoryGenerator:
             if 'text' not in part:
                 raise ValueError(f"Часть {i} не содержит 'text'")
 
+            if 'music' not in part:
+                logger.warning(
+                    f"⚠️  Часть {i} не содержит 'music', будет выбрана случайная")
+            else:
+                music_style = part['music'].lower()
+                if music_style not in MUSIC_STYLES:
+                    logger.warning(
+                        f"⚠️  Часть {i}: неизвестный стиль музыки '{music_style}'. "
+                        f"Известные: {', '.join(MUSIC_STYLES)}"
+                    )
+
 
 # ============================================================================
-# ОЗВУЧКА (ELEVENLABS)
+# ОЗВУЧКА (ELEVENLABS) - С ПОДДЕРЖКОЙ НЕСКОЛЬКИХ API КЛЮЧЕЙ
 # ============================================================================
 
 class TextToSpeech:
-    """Класс для озвучки текста через ElevenLabs API."""
+    """Класс для озвучки текста через ElevenLabs API с поддержкой нескольких ключей."""
 
     # Доступные голоса
     VOICES = {
@@ -269,22 +289,73 @@ class TextToSpeech:
     # V3 модели (не поддерживают optimize_streaming_latency)
     V3_MODELS = {"eleven_v3"}
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self):
         """
-        Инициализация TTS.
-
-        Args:
-            api_key: API ключ ElevenLabs (если None, берется из .env)
+        Инициализация TTS с загрузкой всех доступных API ключей.
         """
-        self.api_key = api_key or os.getenv("ELEVENLABS_API_KEY")
+        # Загружаем все доступные API ключи
+        self.api_keys = []
+        for i in range(1, 10):  # Проверяем до 10 ключей
+            key = os.getenv(f"ELEVENLABS_API_KEY_{i}")
+            if key:
+                self.api_keys.append({
+                    'key': key,
+                    'name': f"API_KEY_{i}",
+                    'client': None,
+                    'active': True
+                })
 
-        if not self.api_key:
+        if not self.api_keys:
             raise ValueError(
-                "ELEVENLABS_API_KEY не найден!\n"
-                "Создайте .env файл и добавьте ваш API ключ."
+                "Не найдено ни одного ELEVENLABS_API_KEY_N!\n"
+                "Добавьте в .env файл:\n"
+                "ELEVENLABS_API_KEY_1=ваш_ключ_1\n"
+                "ELEVENLABS_API_KEY_2=ваш_ключ_2\n"
+                "и т.д."
             )
 
-        self.client = ElevenLabs(api_key=self.api_key)
+        self.current_key_index = 0
+
+        logger.info(f"🔑 Загружено API ключей: {len(self.api_keys)}")
+        for i, key_info in enumerate(self.api_keys):
+            logger.info(
+                f"   ├─ {key_info['name']}: {'✅ активен' if key_info['active'] else '❌ неактивен'}")
+
+    def _get_current_client(self) -> ElevenLabs:
+        """Возвращает клиент для текущего API ключа."""
+        key_info = self.api_keys[self.current_key_index]
+
+        # Создаем клиент если еще не создан
+        if key_info['client'] is None:
+            key_info['client'] = ElevenLabs(api_key=key_info['key'])
+
+        return key_info['client']
+
+    def _switch_to_next_key(self) -> bool:
+        """
+        Переключается на следующий доступный API ключ.
+
+        Returns:
+            bool: True если удалось переключиться, False если все ключи исчерпаны
+        """
+        # Помечаем текущий ключ как неактивный
+        self.api_keys[self.current_key_index]['active'] = False
+
+        # Ищем следующий активный ключ
+        for i in range(len(self.api_keys)):
+            next_index = (self.current_key_index + i + 1) % len(self.api_keys)
+            if self.api_keys[next_index]['active']:
+                old_key_name = self.api_keys[self.current_key_index]['name']
+                new_key_name = self.api_keys[next_index]['name']
+
+                logger.warning(
+                    f"🔄 Переключение с {old_key_name} на {new_key_name}")
+
+                self.current_key_index = next_index
+                return True
+
+        # Все ключи исчерпаны
+        return False
 
     def generate(
         self,
@@ -295,10 +366,11 @@ class TextToSpeech:
         stability: float = 0.5,
         similarity_boost: float = 0.8,
         style: float = 0.0,
-        use_speaker_boost: bool = True
+        use_speaker_boost: bool = True,
+        max_retries: int = None  # По умолчанию пробуем все ключи
     ) -> Path:
         """
-        Генерирует речь из текста.
+        Генерирует речь из текста с автоматическим переключением API ключей.
 
         Args:
             text: Текст для озвучки
@@ -309,9 +381,13 @@ class TextToSpeech:
             similarity_boost: Схожесть (0.0-1.0)
             style: Стиль (0.0-1.0)
             use_speaker_boost: Усиление говорящего
+            max_retries: Макс. попыток (None = все ключи)
 
         Returns:
             Path: Путь к сохраненному файлу
+
+        Raises:
+            RuntimeError: Если все API ключи исчерпаны
         """
         output_file = Path(output_file)
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -327,7 +403,7 @@ class TextToSpeech:
         logger.info(f"   ├─ Символов: {len(text)}")
         logger.info(f"   └─ Файл: {output_file.name}")
 
-        # Параметры
+        # Параметры для API
         convert_params = {
             "voice_id": voice_id,
             "output_format": "mp3_44100_128",
@@ -345,38 +421,147 @@ class TextToSpeech:
         if not is_v3_model:
             convert_params["optimize_streaming_latency"] = "0"
 
-        # Генерируем
-        response = self.client.text_to_speech.convert(**convert_params)
+        # Определяем количество попыток
+        if max_retries is None:
+            max_retries = len(self.api_keys)
 
-        # Сохраняем
-        with open(output_file, "wb") as f:
-            for chunk in response:
-                if chunk:
-                    f.write(chunk)
+        # Пробуем генерацию с переключением ключей
+        for attempt in range(max_retries):
+            try:
+                current_key_name = self.api_keys[self.current_key_index]['name']
 
-        logger.info(f"   ✅ Сохранено: {output_file}")
+                if attempt > 0:
+                    logger.info(
+                        f"   🔄 Попытка {attempt + 1}/{max_retries} с ключом {current_key_name}")
+                else:
+                    logger.info(f"   🔑 Используется ключ: {current_key_name}")
 
-        return output_file
+                # Получаем клиент для текущего ключа
+                client = self._get_current_client()
 
-    def get_usage(self) -> Dict:
-        """Получает информацию об использовании API."""
-        user = self.client.user.get()
-        return {
-            "used": user.subscription.character_count,
-            "limit": user.subscription.character_limit,
-            "remaining": user.subscription.character_limit - user.subscription.character_count
-        }
+                # Генерируем аудио
+                response = client.text_to_speech.convert(**convert_params)
+
+                # Сохраняем
+                with open(output_file, "wb") as f:
+                    for chunk in response:
+                        if chunk:
+                            f.write(chunk)
+
+                logger.info(f"   ✅ Сохранено: {output_file}")
+                return output_file
+
+            except Exception as e:
+                error_str = str(e)
+
+                # Проверяем, является ли это ошибкой квоты
+                is_quota_error = (
+                    'quota_exceeded' in error_str.lower() or
+                    '401' in error_str or
+                    'unauthorized' in error_str.lower()
+                )
+
+                if is_quota_error:
+                    logger.warning(
+                        f"   ⚠️  Квота исчерпана для {current_key_name}")
+
+                    # Пробуем переключиться на следующий ключ
+                    if self._switch_to_next_key():
+                        continue  # Повторяем попытку
+                    else:
+                        raise RuntimeError(
+                            "❌ Все API ключи ElevenLabs исчерпаны!\n"
+                            f"Всего ключей: {len(self.api_keys)}\n"
+                            "Добавьте новые ключи или дождитесь обновления квоты."
+                        ) from e
+                else:
+                    # Другая ошибка - пробрасываем
+                    logger.error(f"   ❌ Ошибка генерации: {e}")
+                    raise
+
+        # Если все попытки исчерпаны
+        raise RuntimeError(
+            f"❌ Не удалось сгенерировать аудио после {max_retries} попыток"
+        )
+
+    def get_usage(self, key_index: Optional[int] = None) -> Dict:
+        """
+        Получает информацию об использовании API.
+
+        Args:
+            key_index: Индекс ключа (None = текущий)
+
+        Returns:
+            Dict: Информация об использовании
+        """
+        if key_index is None:
+            key_index = self.current_key_index
+
+        try:
+            key_info = self.api_keys[key_index]
+
+            # Создаем клиент если нужно
+            if key_info['client'] is None:
+                key_info['client'] = ElevenLabs(api_key=key_info['key'])
+
+            user = key_info['client'].user.get()
+
+            return {
+                "name": key_info['name'],
+                "active": key_info['active'],
+                "used": user.subscription.character_count,
+                "limit": user.subscription.character_limit,
+                "remaining": user.subscription.character_limit - user.subscription.character_count
+            }
+        except Exception as e:
+            logger.warning(
+                f"Не удалось получить данные для {key_info['name']}: {e}")
+            return {
+                "name": key_info['name'],
+                "active": False,
+                "used": 0,
+                "limit": 0,
+                "remaining": 0,
+                "error": str(e)
+            }
+
+    def get_all_usage(self) -> List[Dict]:
+        """Получает информацию об использовании всех ключей."""
+        all_usage = []
+        for i in range(len(self.api_keys)):
+            usage = self.get_usage(i)
+            all_usage.append(usage)
+        return all_usage
 
     def print_usage(self):
-        """Выводит информацию об использовании."""
-        usage = self.get_usage()
+        """Выводит информацию об использовании всех API ключей."""
         logger.info("")
         logger.info("📊 Использование ElevenLabs API:")
-        logger.info(f"   ├─ Использовано: {usage['used']:,} символов")
-        logger.info(f"   ├─ Лимит: {usage['limit']:,} символов")
-        logger.info(f"   ├─ Осталось: {usage['remaining']:,} символов")
-        percentage = (usage['used'] / usage['limit']) * 100
-        logger.info(f"   └─ Процент: {percentage:.1f}%")
+
+        all_usage = self.get_all_usage()
+
+        for usage in all_usage:
+            is_current = (usage['name'] ==
+                          self.api_keys[self.current_key_index]['name'])
+            current_marker = " 👈 текущий" if is_current else ""
+
+            logger.info(f"   ┌─ {usage['name']}{current_marker}")
+
+            if 'error' in usage:
+                logger.info(f"   │  └─ ❌ Ошибка: {usage['error']}")
+            else:
+                logger.info(
+                    f"   │  ├─ Использовано: {usage['used']:,} символов")
+                logger.info(f"   │  ├─ Лимит: {usage['limit']:,} символов")
+                logger.info(
+                    f"   │  ├─ Осталось: {usage['remaining']:,} символов")
+
+                if usage['limit'] > 0:
+                    percentage = (usage['used'] / usage['limit']) * 100
+                    logger.info(f"   │  ├─ Процент: {percentage:.1f}%")
+
+                status = "✅ активен" if usage['active'] else "❌ неактивен"
+                logger.info(f"   │  └─ Статус: {status}")
 
 
 # ============================================================================
@@ -398,6 +583,65 @@ def select_random_file(directory: Path, extensions: set) -> Path:
 
     selected = random.choice(files)
     return selected
+
+
+def select_music_by_style(music_style: Optional[str] = None) -> Path:
+    """
+    Выбирает музыкальный файл по стилю.
+
+    Args:
+        music_style: Стиль музыки (relaxed, sad, scandal, scary, documentary)
+                     Если None, выбирается случайный файл
+
+    Returns:
+        Path: Путь к музыкальному файлу
+
+    Raises:
+        FileNotFoundError: Если не найдено подходящих файлов
+    """
+    if not MUSIC_DIR.exists():
+        raise FileNotFoundError(f"Директория музыки не найдена: {MUSIC_DIR}")
+
+    # Получаем все аудио файлы
+    all_music_files = [
+        f for f in MUSIC_DIR.iterdir()
+        if f.is_file() and f.suffix.lower() in AUDIO_FORMATS
+    ]
+
+    if not all_music_files:
+        raise FileNotFoundError(f"Не найдено музыкальных файлов в {MUSIC_DIR}")
+
+    # Если стиль не указан - случайный файл
+    if music_style is None:
+        selected = random.choice(all_music_files)
+        logger.debug(f"Выбрана случайная музыка: {selected.name}")
+        return selected
+
+    # Нормализуем стиль
+    music_style = music_style.lower().strip()
+
+    # Ищем файлы, начинающиеся с нужного стиля
+    # Формат: {style}-{number}.mp3 (например, relaxed-1.mp3)
+    matching_files = [
+        f for f in all_music_files
+        if f.stem.lower().startswith(f"{music_style}-")
+    ]
+
+    if matching_files:
+        selected = random.choice(matching_files)
+        logger.info(f"🎵 Музыка ({music_style}): {selected.name}")
+        logger.debug(
+            f"   └─ Найдено {len(matching_files)} файлов стиля '{music_style}'")
+        return selected
+    else:
+        # Если файлы нужного стиля не найдены - выбираем случайный
+        logger.warning(
+            f"⚠️  Файлы стиля '{music_style}' не найдены в {MUSIC_DIR}. "
+            f"Выбираю случайную музыку."
+        )
+        selected = random.choice(all_music_files)
+        logger.info(f"🎵 Музыка (случайная): {selected.name}")
+        return selected
 
 
 def calculate_start_time(video_duration: float, audio_duration: float) -> float:
@@ -456,6 +700,7 @@ def run_ffmpeg_command(cmd: list, cwd: Optional[Path] = None):
 def create_video_from_audio(
     audio_path: Path,
     output_name: str,
+    music_style: Optional[str] = None,
     video_path: Optional[Path] = None,
     music_path: Optional[Path] = None,
     keep_ass: bool = False
@@ -466,8 +711,9 @@ def create_video_from_audio(
     Args:
         audio_path: Путь к аудио
         output_name: Имя выходного файла
+        music_style: Стиль музыки (relaxed, sad, etc.)
         video_path: Конкретное видео (или случайное)
-        music_path: Конкретная музыка (или случайная)
+        music_path: Конкретная музыка (или выбор по стилю)
         keep_ass: Сохранить ASS субтитры
 
     Returns:
@@ -478,16 +724,16 @@ def create_video_from_audio(
     logger.info("🎬 СОЗДАНИЕ ФИНАЛЬНОГО ВИДЕО")
     logger.info("=" * 80)
 
-    # Выбор файлов
+    # Выбор видео
     if video_path is None:
         video_path = select_random_file(STOCK_VIDEOS_DIR, VIDEO_FORMATS)
         logger.info(f"📹 Видео (случайное): {video_path.name}")
     else:
         logger.info(f"📹 Видео (указано): {video_path.name}")
 
+    # Выбор музыки по стилю
     if music_path is None:
-        music_path = select_random_file(MUSIC_DIR, AUDIO_FORMATS)
-        logger.info(f"🎵 Музыка (случайная): {music_path.name}")
+        music_path = select_music_by_style(music_style)
     else:
         logger.info(f"🎵 Музыка (указана): {music_path.name}")
 
@@ -658,6 +904,7 @@ def process_story(
     for part in parts:
         part_num = part.get('part_number', 0)
         text = part.get('text', '')
+        music_style = part.get('music')  # Может быть None
 
         if not text:
             logger.warning(f"⚠️  Часть {part_num} пуста, пропускаю")
@@ -666,6 +913,9 @@ def process_story(
         logger.info("")
         logger.info("┌" + "─" * 78 + "┐")
         logger.info(f"│  ЧАСТЬ {part_num}/3" + " " * 68 + "│")
+        if music_style:
+            logger.info(
+                f"│  Стиль музыки: {music_style}" + " " * (61 - len(music_style)) + "│")
         logger.info("└" + "─" * 78 + "┘")
 
         # Озвучка
@@ -674,12 +924,17 @@ def process_story(
 
         logger.info("")
         logger.info(f"🔊 Озвучка части {part_num}...")
-        tts.generate(
-            text=text,
-            output_file=audio_path,
-            voice=voice,
-            model=model
-        )
+
+        try:
+            tts.generate(
+                text=text,
+                output_file=audio_path,
+                voice=voice,
+                model=model
+            )
+        except Exception as e:
+            logger.error(f"❌ Ошибка озвучки части {part_num}: {e}")
+            continue
 
         # Создание видео
         video_filename = f"{timestamp}_Part {part_num}_final.mp4"
@@ -688,6 +943,7 @@ def process_story(
             video_path = create_video_from_audio(
                 audio_path=audio_path,
                 output_name=video_filename,
+                music_style=music_style,  # Передаем стиль музыки
                 keep_ass=keep_ass
             )
             created_videos.append(video_path)
@@ -748,6 +1004,17 @@ def main():
 
 Результат:
   3 готовых видео в assets/ready_videos/
+
+Музыкальные стили:
+  relaxed, sad, scandal, scary, documentary
+  Файлы формата: {style}-{number}.mp3 (например, relaxed-1.mp3)
+  Скрипт автоматически выберет случайный файл нужного стиля
+
+Поддержка нескольких API ключей:
+  В .env файле укажите:
+  ELEVENLABS_API_KEY_1=ключ1
+  ELEVENLABS_API_KEY_2=ключ2
+  и т.д. - скрипт автоматически переключится при исчерпании квоты
         """
     )
 
