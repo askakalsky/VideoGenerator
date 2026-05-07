@@ -1293,7 +1293,9 @@ def process_story(
                 logger.info(f"   └─ Скачано треков: {len(r2_keys)}")
 
         except Exception as e:
-            logger.warning(f"⚠️  R2 инициализация не удалась: {e}")
+            import traceback
+            logger.warning(f"⚠️  R2 инициализация не удалась [{type(e).__name__}]: {e}")
+            logger.warning(traceback.format_exc())
             r2 = None
             queue = None
 
