@@ -2,7 +2,7 @@
 # CORE DEPENDENCIES
 # ============================================================================
 
-# Streamlit - веб-интерфейс
+# Streamlit - веб-интерфейс (опционально, не нужен для GitHub Actions)
 streamlit>=1.28.0
 
 # Video processing
@@ -13,77 +13,44 @@ imageio-ffmpeg>=0.4.9
 # Audio processing
 pydub>=0.25.1
 
-# ============================================================================
-# MODULE SPECIFIC DEPENDENCIES
-# ============================================================================
+# Subtitles
+pysubs2>=1.6.1
 
 # YouTube Downloader
 yt-dlp>=2023.10.13
 
-# TikTok Subtitles (Whisper)
-stable-ts>=2.12.0
-openai-whisper>=20230314
-torch>=2.0.0
-torchaudio>=2.0.0
+# ============================================================================
+# API CLIENTS
+# ============================================================================
 
-# Subtitles
-pysubs2>=1.6.1
+# Google Gemini
+google-generativeai>=0.8.0
+google-genai>=0.3.0
+
+# ElevenLabs (TTS + STT)
+elevenlabs>=1.50.0
+
+# Cloudflare R2 (S3-compatible storage)
+boto3>=1.28.0
+
+# Social media posting (Ayrshare)
+requests>=2.31.0
+urllib3>=2.0.0
 
 # ============================================================================
 # UTILITY LIBRARIES
 # ============================================================================
 
-# Data processing
 numpy>=1.21.0,<2.0.0
-pandas>=2.0.0
-
-# Image processing
 Pillow>=10.0.0
-
-# Progress bars
 tqdm>=4.65.0
-
-# HTTP requests
-requests>=2.31.0
-urllib3>=2.0.0
-
-# ============================================================================
-# DEVELOPMENT & OPTIONAL
-# ============================================================================
-
-# Type checking (optional)
-# mypy>=1.5.0
-# types-requests>=2.31.0
-
-# Testing (optional)
-# pytest>=7.4.0
-# pytest-cov>=4.1.0
-
-# Code formatting (optional)
-# black>=23.7.0
-# isort>=5.12.0
-# flake8>=6.1.0
+python-dotenv>=1.0.0
 
 # ============================================================================
 # SYSTEM REQUIREMENTS
 # ============================================================================
 
-# Note: FFmpeg must be installed separately
-# Installation instructions:
-#
-# Windows:
-#   Download from https://ffmpeg.org/download.html
-#   Or use: choco install ffmpeg
-#   Or use: scoop install ffmpeg
-#
-# macOS:
-#   brew install ffmpeg
-#
-# Linux (Ubuntu/Debian):
-#   sudo apt update && sudo apt install ffmpeg
-#
-# Linux (Fedora):
-#   sudo dnf install ffmpeg
-#
-# Linux (Arch):
-#   sudo pacman -S ffmpeg
+# FFmpeg must be installed separately:
+#   Windows:  choco install ffmpeg  OR  scoop install ffmpeg
+#   macOS:    brew install ffmpeg
+#   Ubuntu:   sudo apt-get install -y ffmpeg

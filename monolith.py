@@ -3,10 +3,11 @@
 
 Полный процесс:
 1. Генерация сюжета (Gemini API) → JSON с 3 частями
-2. Озвучка каждой части (ElevenLabs API) → MP3 файлы
-3. Создание видео для каждой части (Whisper + FFmpeg + GPU)
+2. Генерация обложки (Gemini Image API) → Изображение с текстом части
+3. Озвучка каждой части (ElevenLabs API) → MP3 файлы
+4. Создание видео для каждой части (Whisper + FFmpeg + GPU)
 
-Результат: 3 готовых видео с субтитрами и музыкой
+Результат: 3 готовых видео с субтитрами и музыкой + обложки
 """
 
 import logging
@@ -20,9 +21,12 @@ from pathlib import Path
 from typing import Optional, Union, Dict, List
 from dataclasses import dataclass
 from datetime import datetime
+import mimetypes
 
 # Google Gemini
 import google.generativeai as genai
+from google import genai as genai_new
+from google.genai import types
 
 # ElevenLabs
 from elevenlabs import VoiceSettings
@@ -34,16 +38,19 @@ from dotenv import load_dotenv
 # MoviePy
 from moviepy import AudioFileClip
 
+# PIL для работы с изображениями
+from PIL import Image, ImageDraw, ImageFont
+
 # Импорты из существующих модулей
 from modules.tiktok_subs import (
-    WhisperConfig,
     SubtitleStyle,
-    Transcriber,
     SubtitleGenerator,
     VideoInfo,
     check_dependencies,
-    validate_file_exists
+    validate_file_exists,
+    detect_gpu_capabilities,
 )
+from modules.elevenlabs_stt import ElevenLabsTranscriber
 
 # ============================================================================
 # НАСТРОЙКА ЛОГИРОВАНИЯ
@@ -72,19 +79,12 @@ MUSIC_DIR = Path("assets/music")
 READY_VIDEOS_DIR = Path("assets/ready_videos")
 GENERATED_TEXT_DIR = Path("assets/generated_text")
 GENERATED_AUDIO_DIR = Path("assets/generated_audio")
+GENERATED_IMAGES_DIR = Path("assets/generated_images")
 PROMPTS_DIR = Path("assets/prompts")
 
 # Создаем директории если не существуют
-for directory in [READY_VIDEOS_DIR, GENERATED_TEXT_DIR, GENERATED_AUDIO_DIR]:
+for directory in [READY_VIDEOS_DIR, GENERATED_TEXT_DIR, GENERATED_AUDIO_DIR, GENERATED_IMAGES_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
-
-# Настройки Whisper
-WHISPER_CONFIG = WhisperConfig(
-    model='medium',
-    language='ru',
-    device='cuda',
-    vad=True
-)
 
 # Стиль субтитров
 SUBTITLE_STYLE = SubtitleStyle(
@@ -118,7 +118,8 @@ ELEVENLABS_VOICE = "jessica"  # Голос по умолчанию
 ELEVENLABS_MODEL = "v3"       # Модель по умолчанию
 
 # Настройки Gemini
-GEMINI_MODEL = "gemini-2.0-flash-exp"
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
 
 # Поддерживаемые музыкальные стили
 MUSIC_STYLES = {
@@ -138,22 +139,34 @@ class StoryGenerator:
     """Класс для генерации сюжетов через Gemini API."""
 
     def __init__(self, api_key: Optional[str] = None):
-        """
-        Инициализация генератора.
+        if api_key:
+            self.api_keys = [api_key]
+        else:
+            raw = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY", "")
+            self.api_keys = [k.strip() for k in raw.split(",") if k.strip()]
 
-        Args:
-            api_key: API ключ Gemini (если None, берется из .env)
-        """
-        self.api_key = api_key or os.getenv('GEMINI_API_KEY')
-
-        if not self.api_key:
+        if not self.api_keys:
             raise ValueError(
-                "GEMINI_API_KEY не найден!\n"
-                "Создайте .env файл и добавьте ваш API ключ."
+                "GEMINI_API_KEYS не найден!\n"
+                "Добавьте в .env: GEMINI_API_KEYS=ключ1,ключ2"
             )
 
-        genai.configure(api_key=self.api_key)
+        self._key_index = 0
+        self._configure_current()
+
+    def _configure_current(self):
+        genai.configure(api_key=self.api_keys[self._key_index])
         self.model = genai.GenerativeModel(GEMINI_MODEL)
+
+    def _switch_gemini_key(self) -> bool:
+        """Switch to the next Gemini key. Returns False if only one key available."""
+        next_idx = (self._key_index + 1) % len(self.api_keys)
+        if next_idx == self._key_index:
+            return False
+        self._key_index = next_idx
+        self._configure_current()
+        logger.warning(f"🔄 Переключение на Gemini ключ #{self._key_index + 1}")
+        return True
 
     def generate(self, prompt_file: Optional[Path] = None) -> Dict:
         """
@@ -180,11 +193,27 @@ class StoryGenerator:
         logger.info("=" * 80)
         logger.info(f"📄 Промпт: {prompt_file.name}")
         logger.info(f"🤖 Модель: {GEMINI_MODEL}")
+        logger.info(f"🔑 Ключей Gemini: {len(self.api_keys)}")
 
-        # Отправляем запрос
+        # Отправляем запрос (с ротацией ключей при квоте)
         logger.info("🔄 Отправка запроса к модели...")
-        response = self.model.generate_content(prompt)
-        raw_response_text = response.text
+        raw_response_text = None
+        for attempt in range(len(self.api_keys)):
+            try:
+                response = self.model.generate_content(prompt)
+                raw_response_text = response.text
+                break
+            except Exception as e:
+                err = str(e).lower()
+                if any(x in err for x in ("quota", "resource_exhausted", "429", "rate")):
+                    logger.warning(f"⚠️  Gemini квота исчерпана (ключ #{self._key_index + 1}): {e}")
+                    if not self._switch_gemini_key():
+                        raise
+                    continue
+                raise
+
+        if raw_response_text is None:
+            raise RuntimeError("Все Gemini API ключи исчерпаны")
 
         # Очищаем JSON от markdown
         cleaned_json = self._clean_json_string(raw_response_text)
@@ -196,7 +225,7 @@ class StoryGenerator:
             # Валидация структуры
             self._validate_story(story_data)
 
-            # Сохраняем в файл
+            # Сохраняем в файл (с датой и временем)
             timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
             output_file = GENERATED_TEXT_DIR / f"story_{timestamp}.json"
 
@@ -265,6 +294,324 @@ class StoryGenerator:
 
 
 # ============================================================================
+# ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (GEMINI IMAGE API)
+# ============================================================================
+
+class ImageGenerator:
+    """Класс для генерации изображений через Gemini Image API."""
+
+    def __init__(self, api_key: Optional[str] = None):
+        if api_key:
+            self.api_key = api_key
+        else:
+            raw = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY", "")
+            keys = [k.strip() for k in raw.split(",") if k.strip()]
+            if not keys:
+                raise ValueError(
+                    "GEMINI_API_KEYS не найден!\n"
+                    "Добавьте в .env: GEMINI_API_KEYS=ключ1,ключ2"
+                )
+            self.api_key = keys[0]
+
+        self.client = genai_new.Client(api_key=self.api_key)
+
+    def generate(self, prompt: str, output_path: Path) -> Path:
+        """
+        Генерирует изображение по промпту.
+
+        Args:
+            prompt: Текстовый промпт для генерации
+            output_path: Путь для сохранения изображения
+
+        Returns:
+            Path: Путь к сохраненному изображению
+
+        Raises:
+            RuntimeError: Если генерация не удалась
+        """
+        logger.info("🎨 Генерация базового изображения...")
+        logger.info(
+            f"   ├─ Промпт: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
+        logger.info(f"   ├─ Модель: {GEMINI_IMAGE_MODEL}")
+        logger.info(f"   └─ Формат: 9:16")
+
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_text(text=prompt),
+                ],
+            ),
+        ]
+
+        generate_content_config = types.GenerateContentConfig(
+            response_modalities=["IMAGE", "TEXT"],
+            image_config=types.ImageConfig(
+                aspect_ratio="9:16",
+            ),
+        )
+
+        try:
+            # Генерируем изображение
+            image_generated = False
+
+            for chunk in self.client.models.generate_content_stream(
+                model=GEMINI_IMAGE_MODEL,
+                contents=contents,
+                config=generate_content_config,
+            ):
+                if (
+                    chunk.candidates is None
+                    or chunk.candidates[0].content is None
+                    or chunk.candidates[0].content.parts is None
+                ):
+                    continue
+
+                # Проверяем наличие изображения
+                part = chunk.candidates[0].content.parts[0]
+
+                if part.inline_data and part.inline_data.data:
+                    inline_data = part.inline_data
+                    data_buffer = inline_data.data
+
+                    # Определяем расширение файла
+                    file_extension = mimetypes.guess_extension(
+                        inline_data.mime_type)
+                    if file_extension is None:
+                        file_extension = '.png'
+
+                    # Сохраняем изображение
+                    final_path = output_path.with_suffix(file_extension)
+                    final_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    with open(final_path, 'wb') as f:
+                        f.write(data_buffer)
+
+                    file_size = final_path.stat().st_size / (1024 * 1024)
+                    logger.info(
+                        f"   ✅ Базовое изображение сохранено: {final_path.name}")
+                    logger.info(f"      └─ Размер: {file_size:.2f} MB")
+
+                    image_generated = True
+                    return final_path
+                else:
+                    # Текстовый ответ
+                    if hasattr(chunk, 'text') and chunk.text:
+                        logger.debug(f"   Текст от модели: {chunk.text}")
+
+            if not image_generated:
+                raise RuntimeError("Модель не вернула изображение")
+
+        except Exception as e:
+            logger.error(f"   ❌ Ошибка генерации изображения: {e}")
+            logger.error(f"   Тип ошибки: {type(e).__name__}")
+
+            # Дополнительная диагностика
+            if hasattr(e, '__dict__'):
+                logger.error(f"   Детали ошибки: {e.__dict__}")
+
+            raise
+
+    def add_text_overlay(
+        self,
+        image_path: Path,
+        text: str,
+        output_path: Path,
+        font_name: str = 'Orchidea Pro Medium Italic',
+        font_size: int = 180,
+        text_color: str = "#FFFFFF",
+        stroke_color: str = "#000000",
+        stroke_width: int = 12
+    ) -> Path:
+        """
+        Добавляет текст в центр изображения.
+
+        Args:
+            image_path: Путь к исходному изображению
+            text: Текст для добавления
+            output_path: Путь для сохранения результата
+            font_name: Название шрифта (как в субтитрах)
+            font_size: Размер шрифта
+            text_color: Цвет текста (HEX)
+            stroke_color: Цвет обводки (HEX)
+            stroke_width: Толщина обводки
+
+        Returns:
+            Path: Путь к изображению с текстом
+        """
+        logger.info(f"   📝 Добавление текста: '{text}'")
+
+        try:
+            # Открываем изображение
+            img = Image.open(image_path).convert('RGB')
+            draw = ImageDraw.Draw(img)
+
+            # Пробуем загрузить шрифт из субтитров
+            font = None
+            font_paths_to_try = [
+                # Windows
+                f"C:\\Windows\\Fonts\\{font_name}.ttf",
+                f"C:\\Windows\\Fonts\\{font_name}.otf",
+                # Linux
+                f"/usr/share/fonts/truetype/{font_name}.ttf",
+                f"/usr/local/share/fonts/{font_name}.ttf",
+                # macOS
+                f"/Library/Fonts/{font_name}.ttf",
+                f"/System/Library/Fonts/{font_name}.ttf",
+                # Общие варианты
+                "arial.ttf",
+                "Arial.ttf",
+                "DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            ]
+
+            for font_path in font_paths_to_try:
+                try:
+                    font = ImageFont.truetype(font_path, font_size)
+                    logger.debug(f"      Используется шрифт: {font_path}")
+                    break
+                except (IOError, OSError):
+                    continue
+
+            if font is None:
+                # Fallback на стандартный шрифт
+                logger.warning(
+                    f"      ⚠️  Шрифт '{font_name}' не найден, используется стандартный")
+                font = ImageFont.load_default()
+                # Увеличиваем размер текста для стандартного шрифта
+                font_size = 80
+
+            # Получаем размеры изображения
+            img_width, img_height = img.size
+
+            # Вычисляем размер текста
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+
+            # Позиция текста (центр)
+            x = (img_width - text_width) / 2
+            y = (img_height - text_height) / 2
+
+            # Рисуем обводку (несколько раз для толщины)
+            for offset_x in range(-stroke_width, stroke_width + 1):
+                for offset_y in range(-stroke_width, stroke_width + 1):
+                    if offset_x**2 + offset_y**2 <= stroke_width**2:
+                        draw.text(
+                            (x + offset_x, y + offset_y),
+                            text,
+                            font=font,
+                            fill=stroke_color
+                        )
+
+            # Рисуем основной текст
+            draw.text((x, y), text, font=font, fill=text_color)
+
+            # Сохраняем
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            img.save(output_path, quality=95, optimize=True)
+
+            file_size = output_path.stat().st_size / (1024 * 1024)
+            logger.info(
+                f"      ✅ Сохранено: {output_path.name} ({file_size:.2f} MB)")
+
+            return output_path
+
+        except Exception as e:
+            logger.error(f"      ❌ Ошибка добавления текста: {e}")
+            raise
+
+    def generate_series_images(
+        self,
+        prompt: str,
+        timestamp: str,
+        total_parts: int = 3
+    ) -> List[Path]:
+        """
+        Генерирует серию изображений для частей.
+
+        Процесс:
+        1. Генерирует 1 базовое изображение
+        2. Создает 3 копии с текстом "Часть 1/3", "Часть 2/3", "Часть 3/3"
+
+        Args:
+            prompt: Промпт для генерации базового изображения
+            timestamp: Временная метка для имен файлов
+            total_parts: Количество частей (обычно 3)
+
+        Returns:
+            List[Path]: Список путей к изображениям с текстом
+        """
+        generated_images = []
+
+        try:
+            # 1. Генерируем ОДНУ базовую картинку
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info("🎨 ГЕНЕРАЦИЯ ОБЛОЖЕК")
+            logger.info("=" * 80)
+
+            base_image_path = GENERATED_IMAGES_DIR / f"base_{timestamp}.png"
+
+            try:
+                base_image = self.generate(prompt, base_image_path)
+            except Exception as e:
+                logger.error(
+                    f"❌ Не удалось сгенерировать базовое изображение: {e}")
+                return []
+
+            # 2. Создаем 3 копии с разными подписями
+            logger.info("")
+            logger.info("📝 Добавление текста на обложки...")
+
+            for part_num in range(1, total_parts + 1):
+                try:
+                    text = f"Часть {part_num}/{total_parts}"
+                    final_image_path = GENERATED_IMAGES_DIR / \
+                        f"{timestamp}_Part_{part_num}.png"
+
+                    # Добавляем текст с шрифтом из субтитров
+                    final_image = self.add_text_overlay(
+                        image_path=base_image,
+                        text=text,
+                        output_path=final_image_path,
+                        font_name=SUBTITLE_STYLE.font_name,  # Используем шрифт субтитров
+                        font_size=180,
+                        text_color="#FFFFFF",
+                        stroke_color="#000000",
+                        stroke_width=12
+                    )
+
+                    generated_images.append(final_image)
+
+                except Exception as e:
+                    logger.error(
+                        f"   ❌ Ошибка создания обложки для части {part_num}: {e}")
+                    continue
+
+            # 3. Удаляем базовое изображение (оставляем только с текстом)
+            if base_image.exists():
+                try:
+                    base_image.unlink()
+                    logger.debug(
+                        f"   🗑️  Удалено базовое изображение: {base_image.name}")
+                except Exception as e:
+                    logger.warning(
+                        f"   ⚠️  Не удалось удалить базовое изображение: {e}")
+
+            logger.info("")
+            logger.info(
+                f"✅ Создано обложек: {len(generated_images)}/{total_parts}")
+            logger.info("=" * 80)
+
+            return generated_images
+
+        except Exception as e:
+            logger.error(f"❌ Общая ошибка генерации серии изображений: {e}")
+            return generated_images  # Возвращаем то, что успели создать
+
+
+# ============================================================================
 # ОЗВУЧКА (ELEVENLABS) - С ПОДДЕРЖКОЙ НЕСКОЛЬКИХ API КЛЮЧЕЙ
 # ============================================================================
 
@@ -290,36 +637,31 @@ class TextToSpeech:
     V3_MODELS = {"eleven_v3"}
 
     def __init__(self):
-        """
-        Инициализация TTS с загрузкой всех доступных API ключей.
-        """
-        # Загружаем все доступные API ключи
-        self.api_keys = []
-        for i in range(1, 10):  # Проверяем до 10 ключей
-            key = os.getenv(f"ELEVENLABS_API_KEY_{i}")
-            if key:
-                self.api_keys.append({
-                    'key': key,
-                    'name': f"API_KEY_{i}",
-                    'client': None,
-                    'active': True
-                })
+        """Инициализация TTS с загрузкой всех доступных API ключей."""
+        # Новый формат: ELEVENLABS_API_KEYS=key1,key2,key3
+        raw = os.getenv("ELEVENLABS_API_KEYS", "")
+        keys = [k.strip() for k in raw.split(",") if k.strip()]
 
-        if not self.api_keys:
+        # Обратная совместимость: ELEVENLABS_API_KEY_1, _2, ...
+        if not keys:
+            for i in range(1, 10):
+                k = os.getenv(f"ELEVENLABS_API_KEY_{i}")
+                if k:
+                    keys.append(k)
+
+        if not keys:
             raise ValueError(
-                "Не найдено ни одного ELEVENLABS_API_KEY_N!\n"
-                "Добавьте в .env файл:\n"
-                "ELEVENLABS_API_KEY_1=ваш_ключ_1\n"
-                "ELEVENLABS_API_KEY_2=ваш_ключ_2\n"
-                "и т.д."
+                "Не найдено ElevenLabs API ключей!\n"
+                "Добавьте в .env: ELEVENLABS_API_KEYS=ключ1,ключ2,ключ3"
             )
 
+        self.api_keys = [
+            {'key': k, 'name': f"key_{i + 1}", 'client': None, 'active': True}
+            for i, k in enumerate(keys)
+        ]
         self.current_key_index = 0
 
-        logger.info(f"🔑 Загружено API ключей: {len(self.api_keys)}")
-        for i, key_info in enumerate(self.api_keys):
-            logger.info(
-                f"   ├─ {key_info['name']}: {'✅ активен' if key_info['active'] else '❌ неактивен'}")
+        logger.info(f"🔑 Загружено ElevenLabs ключей: {len(self.api_keys)}")
 
     def _get_current_client(self) -> ElevenLabs:
         """Возвращает клиент для текущего API ключа."""
@@ -443,7 +785,7 @@ class TextToSpeech:
                 response = client.text_to_speech.convert(**convert_params)
 
                 # Сохраняем
-                with open(output_file, "wb") as f:
+                with open(output_file, 'wb') as f:
                     for chunk in response:
                         if chunk:
                             f.write(chunk)
@@ -751,10 +1093,10 @@ def create_video_from_audio(
     logger.info(
         f"✂️  Фрагмент: {format_time(start_time)} - {format_time(start_time + audio_duration)}")
 
-    # Транскрипция
+    # Транскрипция (ElevenLabs STT)
     logger.info("")
-    logger.info("🎙️  Транскрипция...")
-    transcriber = Transcriber(WHISPER_CONFIG)
+    logger.info("🎙️  Транскрипция (ElevenLabs STT)...")
+    transcriber = ElevenLabsTranscriber()
     transcription_result = transcriber.transcribe(audio_path)
 
     # Субтитры
@@ -769,9 +1111,35 @@ def create_video_from_audio(
     )
     generator.generate(transcription_result, ass_path)
 
-    # FFmpeg рендеринг
-    logger.info("")
-    logger.info("🚀 Рендеринг (GPU NVENC)...")
+    # Выбор кодека (GPU если доступен, иначе CPU)
+    gpu_caps = detect_gpu_capabilities()
+    if gpu_caps.get("nvenc"):
+        codec_params = [
+            '-c:v', 'h264_nvenc',
+            '-preset', 'p4',
+            '-rc', 'vbr',
+            '-cq', str(CRF),
+            '-b:v', VIDEO_BITRATE,
+            '-maxrate', VIDEO_BITRATE,
+            '-bufsize', '20M',
+            '-gpu', '0',
+        ]
+        logger.info("🚀 Рендеринг (GPU NVENC)...")
+    elif gpu_caps.get("qsv"):
+        codec_params = [
+            '-c:v', 'h264_qsv',
+            '-preset', 'medium',
+            '-global_quality', str(CRF),
+            '-b:v', VIDEO_BITRATE,
+        ]
+        logger.info("🚀 Рендеринг (Intel QSV)...")
+    else:
+        codec_params = [
+            '-c:v', 'libx264',
+            '-preset', 'medium',
+            '-crf', str(CRF),
+        ]
+        logger.info("🚀 Рендеринг (CPU libx264)...")
 
     video_path_ffmpeg = escape_ffmpeg_path(video_path)
     audio_path_ffmpeg = escape_ffmpeg_path(audio_path)
@@ -779,7 +1147,7 @@ def create_video_from_audio(
     output_path_ffmpeg = escape_ffmpeg_path(output_path)
     ass_name = ass_path.name
 
-    # ✅ ИСПРАВЛЕННЫЙ filter_complex с явной обрезкой видео
+    # filter_complex с явной обрезкой видео
     filter_complex = (
         # 1. Обрезаем видео до нужной длительности
         f"[0:v]trim=duration={audio_duration},setpts=PTS-STARTPTS[v_trimmed];"
@@ -797,7 +1165,6 @@ def create_video_from_audio(
         'ffmpeg', '-y',
 
         # Входы
-        # Начало вырезки (применяется к видео)
         '-ss', str(start_time),
         '-i', video_path_ffmpeg,          # Видео
         '-i', audio_path_ffmpeg,          # Аудиотекст
@@ -809,15 +1176,8 @@ def create_video_from_audio(
         '-map', '[video]',                # Видео с субтитрами
         '-map', '[audio]',                # Микшированное аудио
 
-        # Кодирование видео (NVENC GPU)
-        '-c:v', VIDEO_CODEC,
-        '-preset', PRESET,
-        '-rc', 'vbr',
-        '-cq', str(CRF),
-        '-b:v', VIDEO_BITRATE,
-        '-maxrate', VIDEO_BITRATE,
-        '-bufsize', '20M',
-        '-gpu', '0',
+        # Кодирование видео (авто-определено выше)
+        *codec_params,
 
         # Кодирование аудио
         '-c:a', 'aac',
@@ -827,7 +1187,7 @@ def create_video_from_audio(
         '-pix_fmt', 'yuv420p',
         '-movflags', '+faststart',
 
-        # ✅ ВАЖНО: Останавливаем когда закончится самый короткий поток
+        # Останавливаем когда закончится самый короткий поток
         '-shortest',
 
         # Выход
@@ -856,7 +1216,7 @@ def create_video_from_audio(
 
 
 # ============================================================================
-# ГЛАВНАЯ ФУНКЦИЯ
+# ГЛАВНАЯ ФУНКЦИЯ (ОБНОВЛЕННАЯ ЧАСТЬ)
 # ============================================================================
 
 def process_story(
@@ -864,8 +1224,10 @@ def process_story(
     generate_new: bool = True,
     voice: str = ELEVENLABS_VOICE,
     model: str = ELEVENLABS_MODEL,
-    keep_ass: bool = False
-) -> List[Path]:
+    keep_ass: bool = False,
+    generate_images: bool = True,
+    post_to_social: bool = False,
+) -> Dict[str, List[Path]]:
     """
     Полный цикл создания видео из сюжета.
 
@@ -875,9 +1237,10 @@ def process_story(
         voice: Голос для озвучки
         model: Модель ElevenLabs
         keep_ass: Сохранять ASS субтитры
+        generate_images: Генерировать обложки для частей
 
     Returns:
-        List[Path]: Пути к созданным видео
+        Dict: Словарь с путями к видео и изображениям
     """
     logger.info("")
     logger.info("╔" + "═" * 78 + "╗")
@@ -888,6 +1251,50 @@ def process_story(
 
     # Проверка зависимостей
     check_dependencies()
+
+    # ========================================================================
+    # R2: инициализация + скачивание ассетов если нужно
+    # ========================================================================
+
+    r2 = None
+    queue = None
+    if os.getenv("CLOUDFLARE_ACCOUNT_ID"):
+        try:
+            from modules.cloudflare_r2 import R2Uploader
+            from modules.video_queue import VideoQueue
+            r2 = R2Uploader()
+            queue = VideoQueue(r2)
+            logger.info("☁️  Cloudflare R2 подключён")
+
+            # Скачиваем стоковые видео если папка пуста (GitHub Actions)
+            if not list(STOCK_VIDEOS_DIR.rglob("*.mp4")):
+                logger.info("📥 Скачиваем стоковые видео из R2...")
+                r2_keys = r2.list_objects("stock_videos/")
+                for key in r2_keys:
+                    filename = key.split("/")[-1]
+                    if not filename:
+                        continue
+                    subpath = "/".join(key.split("/")[1:-1])
+                    dest = (STOCK_VIDEOS_DIR / subpath / filename
+                            if subpath else STOCK_VIDEOS_DIR / filename)
+                    r2.download(key, dest)
+                logger.info(f"   └─ Скачано файлов: {len(r2_keys)}")
+
+            # Скачиваем музыку если папка пуста (GitHub Actions)
+            if not list(MUSIC_DIR.glob("*.mp3")):
+                logger.info("📥 Скачиваем музыку из R2...")
+                r2_keys = r2.list_objects("music/")
+                for key in r2_keys:
+                    filename = key.split("/")[-1]
+                    if not filename:
+                        continue
+                    r2.download(key, MUSIC_DIR / filename)
+                logger.info(f"   └─ Скачано треков: {len(r2_keys)}")
+
+        except Exception as e:
+            logger.warning(f"⚠️  R2 инициализация не удалась: {e}")
+            r2 = None
+            queue = None
 
     # ========================================================================
     # ЭТАП 1: ГЕНЕРАЦИЯ ИЛИ ЗАГРУЗКА СЮЖЕТА
@@ -910,18 +1317,39 @@ def process_story(
 
     story_title = story_data.get('story_title', 'untitled')
     parts = story_data.get('parts', [])
+    image_prompt = story_data.get(
+        'image_prompt', 'Abstract cinematic background, dramatic lighting, 9:16 aspect ratio')
 
     if len(parts) != 3:
         raise ValueError(f"Ожидается 3 части, получено: {len(parts)}")
 
+    # Временная метка для всей серии (с датой и временем)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
     # ========================================================================
-    # ЭТАП 2: ОЗВУЧКА + СОЗДАНИЕ ВИДЕО ДЛЯ КАЖДОЙ ЧАСТИ
+    # ЭТАП 2: ГЕНЕРАЦИЯ ОБЛОЖЕК (ЕСЛИ ВКЛЮЧЕНО)
+    # ========================================================================
+
+    generated_images = []
+
+    if generate_images:
+        try:
+            image_gen = ImageGenerator()
+            generated_images = image_gen.generate_series_images(
+                prompt=image_prompt,
+                timestamp=timestamp,
+                total_parts=3
+            )
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка генерации изображений: {e}")
+            # Продолжаем работу даже если изображения не созданы
+
+    # ========================================================================
+    # ЭТАП 3: ОЗВУЧКА + СОЗДАНИЕ ВИДЕО ДЛЯ КАЖДОЙ ЧАСТИ
     # ========================================================================
 
     tts = TextToSpeech()
     created_videos = []
-
-    timestamp = datetime.now().strftime("%Y-%m-%d")
 
     for part in parts:
         part_num = part.get('part_number', 0)
@@ -941,7 +1369,7 @@ def process_story(
         logger.info("└" + "─" * 78 + "┘")
 
         # Озвучка
-        audio_filename = f"{timestamp}_Part {part_num}.mp3"
+        audio_filename = f"{timestamp}_Part_{part_num}.mp3"
         audio_path = GENERATED_AUDIO_DIR / audio_filename
 
         logger.info("")
@@ -959,7 +1387,7 @@ def process_story(
             continue
 
         # Создание видео
-        video_filename = f"{timestamp}_Part {part_num}_final.mp4"
+        video_filename = f"{timestamp}_Part_{part_num}_final.mp4"
 
         try:
             video_path = create_video_from_audio(
@@ -973,6 +1401,18 @@ def process_story(
             logger.error(f"❌ Ошибка создания видео для части {part_num}: {e}")
             continue
 
+        # Загружаем видео в R2 и добавляем в очередь постинга
+        if r2 is not None and queue is not None:
+            try:
+                r2_key = f"videos/{timestamp}/Part_{part_num}.mp4"
+                video_url = r2.upload(video_path, r2_key)
+                if video_url:
+                    total_parts = len(parts)
+                    caption = f"{story_title}. Часть {part_num} из {total_parts}."
+                    queue.push(video_url, caption)
+            except Exception as e:
+                logger.error(f"❌ R2 upload/queue ошибка для части {part_num}: {e}")
+
     # ========================================================================
     # ФИНАЛ
     # ========================================================================
@@ -984,13 +1424,23 @@ def process_story(
     logger.info("")
     logger.info(f"📊 Статистика:")
     logger.info(f"   ├─ Сюжет: {story_title}")
+    logger.info(f"   ├─ Временная метка: {timestamp}")
     logger.info(f"   ├─ Создано видео: {len(created_videos)}/3")
-    logger.info(f"   └─ Директория: {READY_VIDEOS_DIR}")
+    logger.info(f"   ├─ Создано обложек: {len(generated_images)}/3")
+    logger.info(f"   └─ Директория видео: {READY_VIDEOS_DIR}")
     logger.info("")
 
+    logger.info("📹 Видео:")
     for i, video in enumerate(created_videos, 1):
         size = video.stat().st_size / (1024 * 1024)
         logger.info(f"   {i}. {video.name} ({size:.1f} MB)")
+
+    if generated_images:
+        logger.info("")
+        logger.info("🖼️  Обложки:")
+        for i, image in enumerate(generated_images, 1):
+            size = image.stat().st_size / (1024 * 1024)
+            logger.info(f"   {i}. {image.name} ({size:.2f} MB)")
 
     # Использование ElevenLabs
     tts.print_usage()
@@ -998,7 +1448,11 @@ def process_story(
     logger.info("")
     logger.info("═" * 80)
 
-    return created_videos
+    return {
+        'videos': created_videos,
+        'images': generated_images,
+        'timestamp': timestamp
+    }
 
 
 # ============================================================================
@@ -1018,14 +1472,17 @@ def main():
   %(prog)s --story story.json           # Использовать существующий сюжет
   %(prog)s --voice adam --model turbo_v2_5  # Другой голос/модель
   %(prog)s --keep-ass                   # Сохранить ASS субтитры
+  %(prog)s --no-images                  # Не генерировать обложки
 
 Процесс:
   1. Генерация сюжета (Gemini API) → JSON с 3 частями
-  2. Озвучка каждой части (ElevenLabs API) → MP3
-  3. Создание видео (Whisper + FFmpeg GPU) → MP4
+  2. Генерация обложек (Gemini Image API) → 3 изображения
+  3. Озвучка каждой части (ElevenLabs API) → MP3
+  4. Создание видео (Whisper + FFmpeg GPU) → MP4
 
 Результат:
-  3 готовых видео в assets/ready_videos/
+  - 3 готовых видео в assets/ready_videos/
+  - 3 обложки в assets/generated_images/
 
 Музыкальные стили:
   relaxed, sad, scandal, scary, documentary
@@ -1072,6 +1529,24 @@ def main():
     )
 
     parser.add_argument(
+        '--no-images',
+        action='store_true',
+        help='Не генерировать обложки для частей'
+    )
+
+    parser.add_argument(
+        '--post',
+        action='store_true',
+        help='Опубликовать следующее видео из очереди после генерации (Ayrshare)'
+    )
+
+    parser.add_argument(
+        '--post-only',
+        action='store_true',
+        help='Только публикация из очереди, без генерации нового видео'
+    )
+
+    parser.add_argument(
         '--verbose',
         action='store_true',
         help='Подробный вывод'
@@ -1097,13 +1572,49 @@ def main():
         return 1
 
     try:
+        if args.post_only:
+            # Только постинг из очереди
+            if not os.getenv("CLOUDFLARE_ACCOUNT_ID"):
+                logger.error("❌ --post-only требует настроенного Cloudflare R2")
+                return 1
+            from modules.cloudflare_r2 import R2Uploader
+            from modules.video_queue import VideoQueue
+            from modules.ayrshare_poster import AyrsharePosting
+            r2 = R2Uploader()
+            queue = VideoQueue(r2)
+            stats = queue.status()
+            logger.info(f"📊 Очередь: {stats['ready']} готовых, {stats['posted']} опубликованных")
+            item = queue.pop_next()
+            if item:
+                poster = AyrsharePosting()
+                poster.post(item["url"], item["caption"])
+            else:
+                logger.warning("⚠️  Нет видео для публикации")
+            return 0
+
         process_story(
             story_json=args.story,
             generate_new=not args.no_generate,
             voice=args.voice,
             model=args.model,
-            keep_ass=args.keep_ass
+            keep_ass=args.keep_ass,
+            generate_images=not args.no_images,
+            post_to_social=args.post,
         )
+
+        # Постинг после генерации (если --post)
+        if args.post and os.getenv("CLOUDFLARE_ACCOUNT_ID"):
+            from modules.cloudflare_r2 import R2Uploader
+            from modules.video_queue import VideoQueue
+            from modules.ayrshare_poster import AyrsharePosting
+            r2 = R2Uploader()
+            queue = VideoQueue(r2)
+            stats = queue.status()
+            logger.info(f"📊 Очередь: {stats['ready']} готовых, {stats['posted']} опубликованных")
+            item = queue.pop_next()
+            if item:
+                poster = AyrsharePosting()
+                poster.post(item["url"], item["caption"])
 
         return 0
 
