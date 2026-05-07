@@ -640,7 +640,7 @@ class TextToSpeech:
     def __init__(self):
         """Инициализация TTS с загрузкой всех доступных API ключей."""
         # Новый формат: ELEVENLABS_API_KEYS=key1,key2,key3
-        raw = os.getenv("ELEVENLABS_API_KEYS", "")
+        raw = os.getenv("ELEVENLABS_API_KEYS", "").replace('﻿', '')
         keys = [k.strip() for k in raw.split(",") if k.strip()]
 
         # Обратная совместимость: ELEVENLABS_API_KEY_1, _2, ...
