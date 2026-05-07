@@ -117,7 +117,7 @@ ELEVENLABS_VOICE = "jessica"  # Голос по умолчанию
 ELEVENLABS_MODEL = "v3"       # Модель по умолчанию
 
 # Настройки Gemini
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-2.5-flash-preview-05-20"
 GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
 
 # Поддерживаемые музыкальные стили
