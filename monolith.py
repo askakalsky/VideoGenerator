@@ -183,7 +183,7 @@ class StoryGenerator:
         if not prompt_file.exists():
             raise FileNotFoundError(f"Файл промпта не найден: {prompt_file}")
 
-        with open(prompt_file, 'r', encoding='utf-8') as f:
+        with open(prompt_file, 'r', encoding='utf-8-sig') as f:
             prompt = f.read()
 
         logger.info("=" * 80)
