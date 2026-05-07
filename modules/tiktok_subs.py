@@ -388,17 +388,26 @@ def detect_gpu_capabilities() -> Dict[str, bool]:
 
         encoders = result.stdout.lower()
 
-        # Проверяем наличие каждого типа
-        if 'h264_nvenc' in encoders or 'nvenc' in encoders:
+        test_cmd = [
+            'ffmpeg', '-y', '-f', 'lavfi', '-i', 'color=black:s=64x64:d=0.1',
+            '-c:v', '{codec}', '-f', 'null', '-'
+        ]
+
+        def _test_codec(codec: str) -> bool:
+            cmd = [c.replace('{codec}', codec) for c in test_cmd]
+            r = subprocess.run(cmd, capture_output=True, timeout=5)
+            return r.returncode == 0
+
+        if 'h264_nvenc' in encoders and _test_codec('h264_nvenc'):
             capabilities['nvenc'] = True
 
-        if 'h264_qsv' in encoders or 'qsv' in encoders:
+        if 'h264_qsv' in encoders and _test_codec('h264_qsv'):
             capabilities['qsv'] = True
 
-        if 'h264_amf' in encoders or 'amf' in encoders:
+        if 'h264_amf' in encoders and _test_codec('h264_amf'):
             capabilities['amf'] = True
 
-        if 'h264_videotoolbox' in encoders or 'videotoolbox' in encoders:
+        if 'h264_videotoolbox' in encoders and _test_codec('h264_videotoolbox'):
             capabilities['videotoolbox'] = True
 
     except Exception as e:
