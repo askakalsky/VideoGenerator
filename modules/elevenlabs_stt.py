@@ -52,45 +52,47 @@ class ElevenLabsTranscriber:
 
     def __init__(self, api_key: Optional[str] = None):
         if api_key:
-            self.api_key = api_key
+            self.api_keys = [api_key]
         else:
-            raw = os.getenv("ELEVENLABS_API_KEYS", "")
-            keys = [k.strip() for k in raw.split(",") if k.strip()]
+            raw = os.getenv("ELEVENLABS_API_KEYS", "").replace('﻿', '')
+            self.api_keys = [k.strip() for k in raw.split(",") if k.strip()]
             # fallback: old numbered format
-            if not keys:
+            if not self.api_keys:
                 for i in range(1, 10):
                     k = os.getenv(f"ELEVENLABS_API_KEY_{i}")
                     if k:
-                        keys.append(k)
-            if not keys:
+                        self.api_keys.append(k.strip())
+            if not self.api_keys:
                 raise ValueError(
                     "No ElevenLabs API key found. Set ELEVENLABS_API_KEYS in .env"
                 )
-            self.api_key = keys[0]
 
     def transcribe(self, audio_path: Path) -> WhisperCompatibleResult:
         """
         Transcribe audio and return a Whisper-compatible result.
-
-        Args:
-            audio_path: Path to the audio file (MP3, WAV, etc.)
-
-        Returns:
-            WhisperCompatibleResult with .segments containing word timings.
+        Tries all API keys in rotation if one fails.
         """
         from elevenlabs.client import ElevenLabs
 
         audio_path = Path(audio_path)
         logger.info(f"🎙️  ElevenLabs STT: {audio_path.name}")
 
-        client = ElevenLabs(api_key=self.api_key)
-
-        with open(audio_path, "rb") as f:
-            raw = client.speech_to_text.convert(
-                file=f,
-                model_id="scribe_v1",
-                timestamps_granularity="word",
-            )
+        last_error = None
+        for i, key in enumerate(self.api_keys):
+            try:
+                client = ElevenLabs(api_key=key)
+                with open(audio_path, "rb") as f:
+                    raw = client.speech_to_text.convert(
+                        file=f,
+                        model_id="scribe_v1",
+                        timestamps_granularity="word",
+                    )
+                break
+            except Exception as e:
+                logger.warning(f"STT key_{i+1} failed: {e}")
+                last_error = e
+        else:
+            raise RuntimeError(f"All ElevenLabs STT keys failed. Last error: {last_error}")
 
         word_items = [
             w for w in (raw.words or [])
