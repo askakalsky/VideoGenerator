@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Optional, Union, Any, Tuple, List, Dict
 
 import pysubs2
-import stable_whisper
 from pysubs2 import SSAFile, SSAStyle, SSAEvent, Color
 
 # ============================================================================
@@ -601,6 +600,7 @@ class Transcriber:
             logger.info(f"   └─ Устройство: {self.config.device}")
 
         try:
+            import stable_whisper
             self.model = stable_whisper.load_model(
                 self.config.model,
                 device=self.config.device
