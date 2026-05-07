@@ -33,7 +33,9 @@ elevenlabs>=1.50.0
 # Cloudflare R2 (S3-compatible storage)
 boto3>=1.28.0
 
-# Social media posting (Ayrshare)
+# TikTok posting (Playwright-based, username/password auth)
+tiktok-uploader>=0.3.0
+
 requests>=2.31.0
 urllib3>=2.0.0
 

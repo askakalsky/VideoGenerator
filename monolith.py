@@ -1537,7 +1537,7 @@ def main():
     parser.add_argument(
         '--post',
         action='store_true',
-        help='Опубликовать следующее видео из очереди после генерации (Ayrshare)'
+        help='Опубликовать следующее видео из очереди после генерации (TikTok)'
     )
 
     parser.add_argument(
@@ -1579,14 +1579,14 @@ def main():
                 return 1
             from modules.cloudflare_r2 import R2Uploader
             from modules.video_queue import VideoQueue
-            from modules.ayrshare_poster import AyrsharePosting
+            from modules.tiktok_poster import TikTokPoster
             r2 = R2Uploader()
             queue = VideoQueue(r2)
             stats = queue.status()
             logger.info(f"📊 Очередь: {stats['ready']} готовых, {stats['posted']} опубликованных")
             item = queue.pop_next()
             if item:
-                poster = AyrsharePosting()
+                poster = TikTokPoster()
                 poster.post(item["url"], item["caption"])
             else:
                 logger.warning("⚠️  Нет видео для публикации")
@@ -1606,14 +1606,14 @@ def main():
         if args.post and os.getenv("CLOUDFLARE_ACCOUNT_ID"):
             from modules.cloudflare_r2 import R2Uploader
             from modules.video_queue import VideoQueue
-            from modules.ayrshare_poster import AyrsharePosting
+            from modules.tiktok_poster import TikTokPoster
             r2 = R2Uploader()
             queue = VideoQueue(r2)
             stats = queue.status()
             logger.info(f"📊 Очередь: {stats['ready']} готовых, {stats['posted']} опубликованных")
             item = queue.pop_next()
             if item:
-                poster = AyrsharePosting()
+                poster = TikTokPoster()
                 poster.post(item["url"], item["caption"])
 
         return 0

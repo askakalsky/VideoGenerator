@@ -91,17 +91,20 @@ jobs:
           cache: 'pip'
           cache-dependency-path: 'project/requirements.txt'
 
-      - name: Install minimal dependencies
-        run: pip install requests elevenlabs python-dotenv boto3
+      - name: Install dependencies
+        run: pip install requests python-dotenv boto3 tiktok-uploader playwright
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
 
       - name: Post next video from queue
         working-directory: project
         env:
-          ELEVENLABS_API_KEYS: ${{ secrets.ELEVENLABS_API_KEYS }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
           CLOUDFLARE_R2_BUCKET_NAME: ${{ secrets.CLOUDFLARE_R2_BUCKET_NAME }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ secrets.CLOUDFLARE_R2_PUBLIC_URL }}
-          AYRSHARE_API_KEY: ${{ secrets.AYRSHARE_API_KEY }}
+          TIKTOK_EMAIL: ${{ secrets.TIKTOK_EMAIL }}
+          TIKTOK_PASSWORD: ${{ secrets.TIKTOK_PASSWORD }}
         run: python monolith.py --post-only
