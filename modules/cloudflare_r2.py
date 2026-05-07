@@ -17,11 +17,11 @@ class R2Uploader:
     """Upload/download files to/from Cloudflare R2."""
 
     def __init__(self):
-        account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"]
-        access_key = os.environ["CLOUDFLARE_R2_ACCESS_KEY_ID"]
-        secret_key = os.environ["CLOUDFLARE_R2_SECRET_ACCESS_KEY"]
-        self.bucket = os.environ["CLOUDFLARE_R2_BUCKET_NAME"]
-        self.public_url_base = os.environ.get("CLOUDFLARE_R2_PUBLIC_URL", "").rstrip("/")
+        account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"].strip()
+        access_key = os.environ["CLOUDFLARE_R2_ACCESS_KEY_ID"].strip()
+        secret_key = os.environ["CLOUDFLARE_R2_SECRET_ACCESS_KEY"].strip()
+        self.bucket = os.environ["CLOUDFLARE_R2_BUCKET_NAME"].strip()
+        self.public_url_base = os.environ.get("CLOUDFLARE_R2_PUBLIC_URL", "").strip().rstrip("/")
 
         self.client = boto3.client(
             "s3",

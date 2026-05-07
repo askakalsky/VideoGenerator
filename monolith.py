@@ -24,7 +24,6 @@ from datetime import datetime
 import mimetypes
 
 # Google Gemini
-import google.generativeai as genai
 from google import genai as genai_new
 from google.genai import types
 
@@ -155,8 +154,7 @@ class StoryGenerator:
         self._configure_current()
 
     def _configure_current(self):
-        genai.configure(api_key=self.api_keys[self._key_index])
-        self.model = genai.GenerativeModel(GEMINI_MODEL)
+        self.client = genai_new.Client(api_key=self.api_keys[self._key_index])
 
     def _switch_gemini_key(self) -> bool:
         """Switch to the next Gemini key. Returns False if only one key available."""
@@ -200,7 +198,9 @@ class StoryGenerator:
         raw_response_text = None
         for attempt in range(len(self.api_keys)):
             try:
-                response = self.model.generate_content(prompt)
+                response = self.client.models.generate_content(
+                    model=GEMINI_MODEL, contents=prompt
+                )
                 raw_response_text = response.text
                 break
             except Exception as e:
