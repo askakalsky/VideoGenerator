@@ -31,7 +31,8 @@ google-genai>=0.3.0
 elevenlabs>=1.50.0
 
 # Cloudflare R2 (S3-compatible storage)
-boto3>=1.28.0
+# botocore 1.35+ broke custom endpoint URL resolution for non-AWS S3
+boto3>=1.28.0,<1.35.0
 
 # TikTok posting (Playwright-based, username/password auth)
 tiktok-uploader>=0.3.0
