@@ -142,6 +142,7 @@ class StoryGenerator:
             self.api_keys = [api_key]
         else:
             raw = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY", "")
+            raw = raw.replace('﻿', '')
             self.api_keys = [k.strip() for k in raw.split(",") if k.strip()]
 
         if not self.api_keys:
