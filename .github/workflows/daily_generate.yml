@@ -12,13 +12,10 @@ on:
         type: boolean
 
 jobs:
-  # ============================================================
-  # Job 1: Generate 3 videos + upload to R2 + add to queue
-  # ============================================================
-  generate:
-    name: Generate videos
+  generate_and_post:
+    name: Generate videos and post to TikTok
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
 
     steps:
       - name: Checkout repository
@@ -39,6 +36,9 @@ jobs:
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
 
       - name: Create asset directories
         run: |
@@ -61,40 +61,8 @@ jobs:
           CLOUDFLARE_R2_PUBLIC_URL: ${{ secrets.CLOUDFLARE_R2_PUBLIC_URL }}
         run: python monolith.py --no-images
 
-      - name: Upload generated videos as artifacts
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: videos-${{ github.run_number }}
-          path: assets/ready_videos/*.mp4
-          retention-days: 7
-
-  # ============================================================
-  # Job 2: Post next video from queue to TikTok
-  # ============================================================
-  post:
-    name: Post to TikTok
-    needs: generate
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    if: ${{ !inputs.skip_post }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install requests python-dotenv "boto3>=1.28.0,<1.35.0" tiktok-uploader playwright google-genai elevenlabs
-
-      - name: Install Playwright browsers
-        run: playwright install chromium --with-deps
-
       - name: Post next video from queue
+        if: ${{ !inputs.skip_post }}
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
@@ -104,3 +72,11 @@ jobs:
           TIKTOK_EMAIL: ${{ secrets.TIKTOK_EMAIL }}
           TIKTOK_PASSWORD: ${{ secrets.TIKTOK_PASSWORD }}
         run: python monolith.py --post-only
+
+      - name: Upload generated videos as artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: videos-${{ github.run_number }}
+          path: assets/ready_videos/*.mp4
+          retention-days: 7
