@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>TikTok OAuth Callback</title></head>
+<body>
+<h2>Authorization Code</h2>
+<p>Copy this code and paste it into the terminal:</p>
+<pre id="code" style="background:#eee;padding:10px;font-size:18px;"></pre>
+<script>
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  document.getElementById('code').textContent = code || 'No code found in URL';
+</script>
+</body>
+</html>
