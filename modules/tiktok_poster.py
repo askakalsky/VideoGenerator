@@ -1,8 +1,9 @@
 """
-TikTok video posting via Playwright browser automation (tiktok-uploader).
-Authenticates using TIKTOK_SESSION_ID cookie (sessionid from browser).
+TikTok video posting via tiktok-uploader.
+Authenticates using TIKTOK_COOKIES (JSON array of browser cookies).
 """
 
+import json
 import logging
 import os
 import tempfile
@@ -15,23 +16,26 @@ logger = logging.getLogger(__name__)
 
 class TikTokPoster:
     def __init__(self):
-        self.session_id = os.environ.get("TIKTOK_SESSION_ID", "").strip()
-        if not self.session_id:
-            raise ValueError("TIKTOK_SESSION_ID must be set in environment")
+        self.cookies_json = os.environ.get("TIKTOK_COOKIES", "").strip()
+        if not self.cookies_json:
+            raise ValueError("TIKTOK_COOKIES must be set in environment")
 
     def post(self, video_url: str, caption: str) -> dict:
-        """Download video from R2 URL and post to TikTok."""
         from tiktok_uploader.upload import upload_video
         from tiktok_uploader.auth import AuthBackend
 
-        tmp_path = Path(tempfile.mktemp(suffix=".mp4"))
+        tmp_video = Path(tempfile.mktemp(suffix=".mp4"))
+        tmp_cookies = Path(tempfile.mktemp(suffix=".json"))
         try:
-            self._download(video_url, tmp_path)
+            self._download(video_url, tmp_video)
+
+            cookies = json.loads(self.cookies_json)
+            tmp_cookies.write_text(json.dumps(cookies), encoding="utf-8")
 
             logger.info(f"Posting to TikTok: {caption[:80]}")
-            auth = AuthBackend(cookies_list=[{"name": "sessionid", "value": self.session_id}])
+            auth = AuthBackend(cookies=str(tmp_cookies))
             failed = upload_video(
-                str(tmp_path),
+                str(tmp_video),
                 description=caption,
                 auth=auth,
             )
@@ -43,8 +47,10 @@ class TikTokPoster:
             return {"status": "success"}
 
         finally:
-            if tmp_path.exists():
-                tmp_path.unlink()
+            if tmp_video.exists():
+                tmp_video.unlink()
+            if tmp_cookies.exists():
+                tmp_cookies.unlink()
 
     def _download(self, url: str, dest: Path) -> None:
         logger.info(f"Downloading video from R2: {url[:80]}")

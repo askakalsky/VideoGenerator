@@ -69,7 +69,7 @@ jobs:
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
           CLOUDFLARE_R2_BUCKET_NAME: ${{ secrets.CLOUDFLARE_R2_BUCKET_NAME }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ secrets.CLOUDFLARE_R2_PUBLIC_URL }}
-          TIKTOK_SESSION_ID: ${{ secrets.TIKTOK_SESSION_ID }}
+          TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
         run: python monolith.py --post-only
 
       - name: Upload generated videos as artifacts
