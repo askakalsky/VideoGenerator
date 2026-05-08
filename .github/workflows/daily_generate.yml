@@ -84,7 +84,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests python-dotenv "boto3>=1.28.0,<1.35.0" tiktok-uploader playwright google-genai elevenlabs
+        run: pip install -r requirements.txt tiktok-uploader playwright
 
       - name: Install Playwright browsers
         run: playwright install chromium --with-deps
