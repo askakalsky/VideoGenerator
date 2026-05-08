@@ -19,7 +19,6 @@ import re
 import subprocess
 import urllib.parse
 import webbrowser
-from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import requests
 from dotenv import load_dotenv
@@ -28,23 +27,8 @@ load_dotenv()
 
 CLIENT_KEY = os.environ.get("TIKTOK_CLIENT_KEY", "").strip()
 CLIENT_SECRET = os.environ.get("TIKTOK_CLIENT_SECRET", "").strip()
-REDIRECT_URI = "http://localhost:8080/callback"
+REDIRECT_URI = "https://askakalsky.github.io/VideoGenerator/callback.html"
 SCOPES = "video.publish,video.upload"
-
-auth_code = None
-
-
-class CallbackHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        global auth_code
-        params = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(self.path).query))
-        auth_code = params.get("code")
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"<h1>Authorization successful! You can close this tab.</h1>")
-
-    def log_message(self, format, *args):
-        pass
 
 
 def main():
@@ -66,13 +50,12 @@ def main():
     print(f"If browser doesn't open, go to:\n{auth_url}\n")
     webbrowser.open(auth_url)
 
-    # Wait for callback
-    print("Waiting for authorization callback on http://localhost:8080...")
-    server = HTTPServer(("localhost", 8080), CallbackHandler)
-    server.handle_request()
+    print("\nAfter authorizing, you will be redirected to the callback page.")
+    print("Copy the 'code' value shown on the page and paste it here.")
+    auth_code = input("Paste authorization code: ").strip()
 
     if not auth_code:
-        print("ERROR: No authorization code received.")
+        print("ERROR: No authorization code provided.")
         return
 
     print(f"Authorization code received.")

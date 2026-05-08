@@ -1589,7 +1589,7 @@ def main():
                 return 1
             from modules.cloudflare_r2 import R2Uploader
             from modules.video_queue import VideoQueue
-            from modules.tiktok_poster import TikTokPoster
+            from modules.tiktok_api_poster import TikTokAPIPoster as TikTokPoster
             r2 = R2Uploader()
             queue = VideoQueue(r2)
             stats = queue.status()
@@ -1616,7 +1616,7 @@ def main():
         if args.post and os.getenv("CLOUDFLARE_ACCOUNT_ID"):
             from modules.cloudflare_r2 import R2Uploader
             from modules.video_queue import VideoQueue
-            from modules.tiktok_poster import TikTokPoster
+            from modules.tiktok_api_poster import TikTokAPIPoster as TikTokPoster
             r2 = R2Uploader()
             queue = VideoQueue(r2)
             stats = queue.status()
