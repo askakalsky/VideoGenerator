@@ -14,6 +14,7 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 PAUSE_THRESHOLD = 1.0  # seconds gap that triggers a new segment
+MAX_SEGMENT_WORDS = 4  # max words per subtitle line (TikTok style)
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +106,7 @@ class ElevenLabsTranscriber:
         logger.info(f"   └─ Получено слов: {len(word_items)}")
 
         segments = self._group_into_segments(word_items)
+        segments = self._split_long_segments(segments)
         logger.info(f"   └─ Сегментов: {len(segments)}")
 
         return WhisperCompatibleResult(segments=segments)
@@ -138,6 +140,18 @@ class ElevenLabsTranscriber:
             segments.append(_make_segment(current_words))
 
         return segments
+
+    def _split_long_segments(self, segments: List[Segment]) -> List[Segment]:
+        """Split segments longer than MAX_SEGMENT_WORDS into smaller chunks."""
+        result: List[Segment] = []
+        for seg in segments:
+            if len(seg.words) <= MAX_SEGMENT_WORDS:
+                result.append(seg)
+            else:
+                for i in range(0, len(seg.words), MAX_SEGMENT_WORDS):
+                    chunk = seg.words[i:i + MAX_SEGMENT_WORDS]
+                    result.append(_make_segment(chunk))
+        return result
 
 
 def _make_segment(words: List[WordTiming]) -> Segment:
