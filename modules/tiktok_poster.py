@@ -1,6 +1,6 @@
 """
 TikTok video posting via Playwright browser automation (tiktok-uploader).
-Logs in with TIKTOK_EMAIL + TIKTOK_PASSWORD — no manual cookie export needed.
+Authenticates using TIKTOK_SESSION_ID cookie (sessionid from browser).
 """
 
 import logging
@@ -15,10 +15,9 @@ logger = logging.getLogger(__name__)
 
 class TikTokPoster:
     def __init__(self):
-        self.username = os.environ.get("TIKTOK_EMAIL") or os.environ.get("TIKTOK_USERNAME")
-        self.password = os.environ.get("TIKTOK_PASSWORD")
-        if not self.username or not self.password:
-            raise ValueError("TIKTOK_EMAIL and TIKTOK_PASSWORD must be set in environment")
+        self.session_id = os.environ.get("TIKTOK_SESSION_ID", "").strip()
+        if not self.session_id:
+            raise ValueError("TIKTOK_SESSION_ID must be set in environment")
 
     def post(self, video_url: str, caption: str) -> dict:
         """Download video from R2 URL and post to TikTok."""
@@ -30,7 +29,7 @@ class TikTokPoster:
             self._download(video_url, tmp_path)
 
             logger.info(f"Posting to TikTok: {caption[:80]}")
-            auth = AuthBackend(username=self.username, password=self.password)
+            auth = AuthBackend(cookies_list=[{"name": "sessionid", "value": self.session_id}])
             failed = upload_video(
                 str(tmp_path),
                 description=caption,
