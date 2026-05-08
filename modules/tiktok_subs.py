@@ -802,7 +802,7 @@ class SubtitleGenerator:
             if not timed_words:
                 # Если не удалось извлечь тайминги слов
                 full_text = escape_ass_text(
-                    ''.join(safe_getattr(w, 'word', '') for w in words).strip()
+                    ' '.join(safe_getattr(w, 'word', '') for w in words if safe_getattr(w, 'word', '')).strip()
                 )
                 if full_text and seg_start is not None and seg_end is not None:
                     subs.events.append(SSAEvent(
@@ -837,10 +837,15 @@ class SubtitleGenerator:
                 # Устанавливаем базовый цвет
                 parts = [f"{{\\c&H{normal_bgr}&}}"]
 
+                words_added = 0
                 for j, word in enumerate(words):
                     word_text = safe_getattr(word, 'word', '')
                     if not word_text:
                         continue
+
+                    if words_added > 0:
+                        parts.append(" ")
+                    words_added += 1
 
                     escaped_text = escape_ass_text(word_text)
 
