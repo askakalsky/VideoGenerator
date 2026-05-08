@@ -1598,6 +1598,7 @@ def main():
             if item:
                 poster = TikTokPoster()
                 poster.post(item["url"], item["caption"])
+                queue.mark_posted(item["url"])
             else:
                 logger.warning("⚠️  Нет видео для публикации")
             return 0
@@ -1625,6 +1626,7 @@ def main():
             if item:
                 poster = TikTokPoster()
                 poster.post(item["url"], item["caption"])
+                queue.mark_posted(item["url"])
 
         return 0
 

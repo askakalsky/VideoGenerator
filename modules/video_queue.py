@@ -51,24 +51,28 @@ class VideoQueue:
 
     def pop_next(self) -> Optional[Dict]:
         """
-        Take the first ready item, mark it as posted, and return it.
-
-        Returns:
-            Item dict with keys: url, caption, status, created_at.
-            None if the queue is empty.
+        Return the first ready item WITHOUT marking it posted yet.
+        Call mark_posted(url) after successful posting.
         """
         data = self._load()
-
         for item in data["items"]:
             if item.get("status") == "ready":
-                item["status"] = "posted"
-                item["posted_at"] = datetime.utcnow().isoformat()
-                self._save(data)
                 logger.info(f"📤 Взято из очереди: {item['url'][:80]}")
                 return item
 
         logger.warning("⚠️  Очередь пуста — нет видео со статусом 'ready'")
         return None
+
+    def mark_posted(self, url: str) -> None:
+        """Mark item with given URL as posted after successful publish."""
+        data = self._load()
+        for item in data["items"]:
+            if item.get("url") == url and item.get("status") == "ready":
+                item["status"] = "posted"
+                item["posted_at"] = datetime.utcnow().isoformat()
+                self._save(data)
+                logger.info("✅ Помечено как опубликованное")
+                return
 
     def status(self) -> Dict:
         """Return queue stats: total, ready, posted."""
