@@ -1,6 +1,6 @@
 """
 TikTok video posting via tiktok-uploader.
-Tries multiple auth methods: Netscape cookies file, cookies_list, sessionid only.
+Authenticates using TIKTOK_COOKIES (JSON) or TIKTOK_SESSION_ID.
 """
 
 import json
@@ -23,46 +23,39 @@ class TikTokPoster:
 
     def post(self, video_url: str, caption: str) -> dict:
         from tiktok_uploader.upload import upload_video
-        from tiktok_uploader.auth import AuthBackend
 
         tmp_video = Path(tempfile.mktemp(suffix=".mp4"))
         tmp_cookies = Path(tempfile.mktemp(suffix=".txt"))
         try:
             self._download(video_url, tmp_video)
-            logger.info(f"Posting to TikTok: {caption[:80]}")
-
-            auth = self._build_auth(tmp_cookies)
-            failed = upload_video(str(tmp_video), description=caption, auth=auth)
-
-            if failed:
-                raise RuntimeError(f"TikTok upload failed: {failed}")
-
-            logger.info("Posted to TikTok successfully")
-            return {"status": "success"}
-
+            return self._upload(str(tmp_video), caption, tmp_cookies)
         finally:
             for p in (tmp_video, tmp_cookies):
                 if p.exists():
                     p.unlink()
 
-    def _build_auth(self, tmp_cookies: Path):
-        from tiktok_uploader.auth import AuthBackend
+    def post_local(self, video_path: str, caption: str) -> dict:
+        tmp_cookies = Path(tempfile.mktemp(suffix=".txt"))
+        try:
+            return self._upload(video_path, caption, tmp_cookies)
+        finally:
+            if tmp_cookies.exists():
+                tmp_cookies.unlink()
 
-        # Method 1: Netscape cookies file from JSON
+    def _upload(self, video_path: str, caption: str, tmp_cookies: Path) -> dict:
+        from tiktok_uploader.upload import upload_video
+
+        logger.info(f"Posting to TikTok: {caption[:80]}")
+
         if self.cookies_json:
-            try:
-                cookies = json.loads(self.cookies_json)
-                netscape = self._to_netscape(cookies)
-                tmp_cookies.write_text(netscape, encoding="utf-8")
-                logger.info("Using Netscape cookies file auth")
-                return AuthBackend(cookies=str(tmp_cookies))
-            except Exception as e:
-                logger.warning(f"Netscape auth build failed: {e}, falling back")
-
-        # Method 2: sessionid only
-        if self.session_id:
-            logger.info("Using sessionid cookies_list auth")
-            return AuthBackend(cookies_list=[{
+            cookies = json.loads(self.cookies_json)
+            netscape = self._to_netscape(cookies)
+            tmp_cookies.write_text(netscape, encoding="utf-8")
+            logger.info("Using Netscape cookies file")
+            failed = upload_video(video_path, description=caption, cookies=str(tmp_cookies))
+        else:
+            logger.info("Using sessionid cookies_list")
+            failed = upload_video(video_path, description=caption, cookies_list=[{
                 "name": "sessionid",
                 "value": self.session_id,
                 "domain": ".tiktok.com",
@@ -71,7 +64,11 @@ class TikTokPoster:
                 "httpOnly": True,
             }])
 
-        raise ValueError("No valid TikTok auth method available")
+        if failed:
+            raise RuntimeError(f"TikTok upload failed: {failed}")
+
+        logger.info("Posted to TikTok successfully")
+        return {"status": "success"}
 
     def _to_netscape(self, cookies: list) -> str:
         lines = ["# Netscape HTTP Cookie File"]
