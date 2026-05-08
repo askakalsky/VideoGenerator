@@ -1,14 +1,16 @@
 """
-TikTok Content Posting API (official).
-https://developers.tiktok.com/products/content-posting-api/
+TikTok Content Posting API (official) — push_by_file method.
+Downloads video from R2 URL, uploads directly to TikTok in chunks.
 
 Requires env vars:
   TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET, TIKTOK_ACCESS_TOKEN, TIKTOK_REFRESH_TOKEN
 """
 
 import logging
+import math
 import os
 import re
+import tempfile
 import time
 
 import requests
@@ -16,6 +18,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 ENV_PATH = os.path.join(os.path.dirname(__file__), "..", ".env")
+CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 class TikTokAPIPoster:
@@ -31,22 +34,39 @@ class TikTokAPIPoster:
             raise ValueError("TIKTOK_ACCESS_TOKEN not set. Run get_tiktok_oauth_token.py.")
 
     def post(self, video_url: str, caption: str) -> dict:
-        """Post video to TikTok via pull-from-URL method."""
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json; charset=UTF-8",
-        }
+        """Download video from URL, upload to TikTok via push_by_file."""
+        logger.info("Downloading video from R2...")
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp_path = tmp.name
+            resp = requests.get(video_url, stream=True, timeout=120)
+            resp.raise_for_status()
+            for chunk in resp.iter_content(chunk_size=8192):
+                tmp.write(chunk)
+
+        try:
+            return self._upload_file(tmp_path, caption)
+        finally:
+            os.unlink(tmp_path)
+
+    def _upload_file(self, video_path: str, caption: str) -> dict:
+        file_size = os.path.getsize(video_path)
+        chunk_count = max(1, math.ceil(file_size / CHUNK_SIZE))
+
+        headers = self._auth_headers()
+
         body = {
             "post_info": {
                 "title": caption[:2200],
-                "privacy_level": "SELF_ONLY",  # until app audit passes
+                "privacy_level": "SELF_ONLY",
                 "disable_duet": False,
                 "disable_comment": False,
                 "disable_stitch": False,
             },
             "source_info": {
-                "source": "PULL_FROM_URL",
-                "video_url": video_url,
+                "source": "FILE_UPLOAD",
+                "video_size": file_size,
+                "chunk_size": CHUNK_SIZE,
+                "total_chunk_count": chunk_count,
             },
         }
 
@@ -59,7 +79,7 @@ class TikTokAPIPoster:
         if resp.status_code == 401:
             logger.info("Access token expired, refreshing...")
             self.access_token = self._refresh_access_token()
-            headers["Authorization"] = f"Bearer {self.access_token}"
+            headers = self._auth_headers()
             resp = requests.post(
                 f"{self.BASE_URL}/post/publish/video/init/",
                 json=body,
@@ -69,14 +89,29 @@ class TikTokAPIPoster:
         data = resp.json()
         logger.info("TikTok init response: %s", data)
 
-        if data.get("error", {}).get("code") not in ("ok", None, ""):
+        err_code = data.get("error", {}).get("code", "ok")
+        if err_code not in ("ok", None, ""):
             raise RuntimeError(f"TikTok API error: {data}")
 
-        publish_id = data.get("data", {}).get("publish_id")
-        if not publish_id:
-            raise RuntimeError(f"No publish_id in response: {data}")
+        upload_url = data["data"]["upload_url"]
+        publish_id = data["data"]["publish_id"]
 
+        self._upload_chunks(video_path, upload_url, file_size, chunk_count)
         return self._poll_status(publish_id, headers)
+
+    def _upload_chunks(self, video_path: str, upload_url: str, file_size: int, chunk_count: int):
+        with open(video_path, "rb") as f:
+            for i in range(chunk_count):
+                chunk = f.read(CHUNK_SIZE)
+                start = i * CHUNK_SIZE
+                end = min(start + len(chunk) - 1, file_size - 1)
+                headers = {
+                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Content-Type": "video/mp4",
+                }
+                resp = requests.put(upload_url, data=chunk, headers=headers, timeout=120)
+                resp.raise_for_status()
+                logger.info("Uploaded chunk %d/%d", i + 1, chunk_count)
 
     def _poll_status(self, publish_id: str, headers: dict) -> dict:
         for _ in range(30):
@@ -95,6 +130,12 @@ class TikTokAPIPoster:
             if status in ("FAILED", "PUBLISH_FAILED"):
                 raise RuntimeError(f"TikTok publish failed: {data}")
         raise RuntimeError("TikTok publish timed out after 5 minutes")
+
+    def _auth_headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json; charset=UTF-8",
+        }
 
     def _refresh_access_token(self) -> str:
         resp = requests.post(
