@@ -1148,14 +1148,21 @@ def create_video_from_audio(
     output_path_ffmpeg = escape_ffmpeg_path(output_path)
     ass_name = ass_path.name
 
-    # filter_complex с явной обрезкой видео
+    fade_in = 1.5   # секунд нарастания в начале
+    fade_out = 1.5  # секунд затухания в конце
+    fade_out_start = max(0.0, audio_duration - fade_out)
+
+    # filter_complex с явной обрезкой видео и фейдами
     filter_complex = (
-        # 1. Обрезаем видео до нужной длительности
-        f"[0:v]trim=duration={audio_duration},setpts=PTS-STARTPTS[v_trimmed];"
-        # 2. Зацикливаем и обрезаем музыку
-        f"[2:a]volume={MUSIC_VOLUME},aloop=loop=-1:size=2e+09,atrim=0:{audio_duration},asetpts=PTS-STARTPTS[music];"
-        # 3. Настраиваем громкость голоса и обрезаем
-        f"[1:a]volume={AUDIO_VOLUME},atrim=0:{audio_duration},asetpts=PTS-STARTPTS[voice];"
+        # 1. Обрезаем видео, добавляем fade in/out
+        f"[0:v]trim=duration={audio_duration},setpts=PTS-STARTPTS,"
+        f"fade=t=in:st=0:d={fade_in},fade=t=out:st={fade_out_start}:d={fade_out}[v_trimmed];"
+        # 2. Музыка: зацикливаем, регулируем громкость, fade in/out
+        f"[2:a]volume={MUSIC_VOLUME},aloop=loop=-1:size=2e+09,atrim=0:{audio_duration},asetpts=PTS-STARTPTS,"
+        f"afade=t=in:st=0:d={fade_in},afade=t=out:st={fade_out_start}:d={fade_out}[music];"
+        # 3. Голос: громкость, fade in/out
+        f"[1:a]volume={AUDIO_VOLUME},atrim=0:{audio_duration},asetpts=PTS-STARTPTS,"
+        f"afade=t=in:st=0:d=0.5,afade=t=out:st={fade_out_start}:d={fade_out}[voice];"
         # 4. Микшируем голос + музыку
         f"[voice][music]amix=inputs=2:duration=first:dropout_transition=0[audio];"
         # 5. Прожигаем субтитры на обрезанное видео
