@@ -18,7 +18,8 @@ import requests
 logger = logging.getLogger(__name__)
 
 ENV_PATH = os.path.join(os.path.dirname(__file__), "..", ".env")
-CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB
+MIN_CHUNK_SIZE = 5 * 1024 * 1024   # 5 MB (TikTok minimum)
+MAX_CHUNK_SIZE = 64 * 1024 * 1024  # 64 MB (TikTok maximum)
 
 
 class TikTokAPIPoster:
@@ -50,7 +51,13 @@ class TikTokAPIPoster:
 
     def _upload_file(self, video_path: str, caption: str) -> dict:
         file_size = os.path.getsize(video_path)
-        chunk_count = max(1, math.ceil(file_size / CHUNK_SIZE))
+        # Use single chunk if file fits in max chunk size, else split into ~10MB chunks
+        if file_size <= MAX_CHUNK_SIZE:
+            chunk_size = file_size
+            chunk_count = 1
+        else:
+            chunk_size = max(MIN_CHUNK_SIZE, min(MAX_CHUNK_SIZE, 10 * 1024 * 1024))
+            chunk_count = math.ceil(file_size / chunk_size)
 
         headers = self._auth_headers()
 
@@ -65,7 +72,7 @@ class TikTokAPIPoster:
             "source_info": {
                 "source": "FILE_UPLOAD",
                 "video_size": file_size,
-                "chunk_size": CHUNK_SIZE,
+                "chunk_size": chunk_size,
                 "total_chunk_count": chunk_count,
             },
         }
@@ -96,14 +103,14 @@ class TikTokAPIPoster:
         upload_url = data["data"]["upload_url"]
         publish_id = data["data"]["publish_id"]
 
-        self._upload_chunks(video_path, upload_url, file_size, chunk_count)
+        self._upload_chunks(video_path, upload_url, file_size, chunk_size, chunk_count)
         return self._poll_status(publish_id, headers)
 
-    def _upload_chunks(self, video_path: str, upload_url: str, file_size: int, chunk_count: int):
+    def _upload_chunks(self, video_path: str, upload_url: str, file_size: int, chunk_size: int, chunk_count: int):
         with open(video_path, "rb") as f:
             for i in range(chunk_count):
-                chunk = f.read(CHUNK_SIZE)
-                start = i * CHUNK_SIZE
+                chunk = f.read(chunk_size)
+                start = i * chunk_size
                 end = min(start + len(chunk) - 1, file_size - 1)
                 headers = {
                     "Content-Range": f"bytes {start}-{end}/{file_size}",
