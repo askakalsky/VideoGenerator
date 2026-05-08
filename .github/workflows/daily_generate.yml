@@ -70,7 +70,8 @@ jobs:
     name: Post to TikTok
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'post-only' || github.event.schedule == '0 6 * * *' || github.event.schedule == '0 14 * * *' || github.event.schedule == '0 22 * * *'
+    needs: [generate]
+    if: always() && (github.event_name == 'workflow_dispatch' && inputs.mode == 'post-only' || github.event.schedule == '0 6 * * *' || github.event.schedule == '0 14 * * *' || github.event.schedule == '0 22 * * *')
 
     steps:
       - name: Checkout repository
