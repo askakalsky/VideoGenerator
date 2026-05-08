@@ -13,6 +13,7 @@ on:
         default: 'generate'
         type: choice
         options:
+          - generate-and-post
           - generate
           - post-only
 
@@ -21,7 +22,7 @@ jobs:
     name: Generate videos
     runs-on: ubuntu-latest
     timeout-minutes: 75
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'generate' || github.event.schedule == '0 6 * * *'
+    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'generate' || inputs.mode == 'generate-and-post') || github.event.schedule == '0 6 * * *'
 
     steps:
       - name: Checkout repository
@@ -71,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [generate]
-    if: always() && (github.event_name == 'workflow_dispatch' && inputs.mode == 'post-only' || github.event.schedule == '0 6 * * *' || github.event.schedule == '0 14 * * *' || github.event.schedule == '0 22 * * *')
+    if: always() && (github.event_name == 'workflow_dispatch' && (inputs.mode == 'post-only' || inputs.mode == 'generate-and-post') || github.event.schedule == '0 6 * * *' || github.event.schedule == '0 14 * * *' || github.event.schedule == '0 22 * * *')
 
     steps:
       - name: Checkout repository
