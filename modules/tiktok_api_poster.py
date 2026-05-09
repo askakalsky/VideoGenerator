@@ -56,18 +56,16 @@ class TikTokAPIPoster:
             chunk_size = file_size
             chunk_count = 1
         else:
-            chunk_size = MAX_CHUNK_SIZE  # 64MB chunks → fewer total chunks
-            chunk_count = math.ceil(file_size / chunk_size)
+            # TikTok: last chunk can be up to 128MB, so 2 chunks cover up to 192MB
+            chunk_size = MAX_CHUNK_SIZE  # 64MB per chunk
+            chunk_count = 2
 
         headers = self._auth_headers()
 
         body = {
             "post_info": {
-                "title": caption[:2200],
+                "title": caption[:150],
                 "privacy_level": "SELF_ONLY",
-                "disable_duet": False,
-                "disable_comment": False,
-                "disable_stitch": False,
             },
             "source_info": {
                 "source": "FILE_UPLOAD",
