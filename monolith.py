@@ -1520,7 +1520,11 @@ def process_story(
                 video_url = r2.upload(video_path, r2_key)
                 if video_url:
                     total_parts = len(parts)
-                    caption = f"{story_title}. Часть {part_num} из {total_parts}."
+                    annotation = (part.get('annotation') or '').strip()
+                    if annotation:
+                        caption = f"Часть {part_num}/{total_parts}\n\n{annotation}"
+                    else:
+                        caption = f"{story_title}. Часть {part_num} из {total_parts}."
                     queue.push(video_url, caption)
             except Exception as e:
                 logger.error(f"❌ R2 upload/queue ошибка для части {part_num}: {e}")
