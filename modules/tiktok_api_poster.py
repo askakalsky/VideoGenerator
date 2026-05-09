@@ -7,7 +7,6 @@ Requires env vars:
 """
 
 import logging
-import math
 import os
 import re
 import tempfile
@@ -18,8 +17,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 ENV_PATH = os.path.join(os.path.dirname(__file__), "..", ".env")
-MIN_CHUNK_SIZE = 5 * 1024 * 1024   # 5 MB (TikTok minimum)
-MAX_CHUNK_SIZE = 64 * 1024 * 1024  # 64 MB (TikTok maximum)
+MAX_CHUNK_SIZE = 64 * 1024 * 1024  # 64 MB (TikTok maximum per chunk)
 
 
 class TikTokAPIPoster:
@@ -51,13 +49,13 @@ class TikTokAPIPoster:
 
     def _upload_file(self, video_path: str, caption: str) -> dict:
         file_size = os.path.getsize(video_path)
-        # Use single chunk if file fits in max chunk size, else split into ~10MB chunks
+        # TikTok quirk: ceil(size/chunk) doesn't validate. For files >64MB, use exactly
+        # 2 chunks (first 64MB, last up to 128MB → covers up to 192MB).
         if file_size <= MAX_CHUNK_SIZE:
             chunk_size = file_size
             chunk_count = 1
         else:
-            # TikTok: last chunk can be up to 128MB, so 2 chunks cover up to 192MB
-            chunk_size = MAX_CHUNK_SIZE  # 64MB per chunk
+            chunk_size = MAX_CHUNK_SIZE
             chunk_count = 2
 
         headers = self._auth_headers()
@@ -95,9 +93,6 @@ class TikTokAPIPoster:
             )
 
         data = resp.json()
-        logger.info("TikTok init params: file_size=%d chunk_size=%d chunk_count=%d", file_size, chunk_size, chunk_count)
-        logger.info("TikTok init response: %s", data)
-
         err_code = data.get("error", {}).get("code", "ok")
         if err_code not in ("ok", None, ""):
             raise RuntimeError(f"TikTok API error: {data}")
@@ -119,7 +114,6 @@ class TikTokAPIPoster:
                 headers = {
                     "Content-Range": f"bytes {start}-{end}/{file_size}",
                     "Content-Type": "video/mp4",
-                    "Content-Length": str(len(chunk)),
                 }
                 resp = requests.put(upload_url, data=chunk, headers=headers, timeout=300)
                 resp.raise_for_status()
@@ -129,15 +123,15 @@ class TikTokAPIPoster:
         for _ in range(30):
             time.sleep(10)
             resp = requests.post(
-                f"{self.BASE_URL}/post/publish/status/fetch/?fields=status,fail_reason",
+                f"{self.BASE_URL}/post/publish/status/fetch/",
                 json={"publish_id": publish_id},
                 headers=headers,
             )
             data = resp.json()
             status = data.get("data", {}).get("status", "")
             logger.info("TikTok publish status: %s", status)
-            if status in ("PUBLISH_COMPLETE", "SEND_TO_USER_INBOX"):
-                logger.info("✅ Video uploaded to TikTok inbox/published!")
+            if status == "PUBLISH_COMPLETE":
+                logger.info("✅ Video published!")
                 return data
             if status in ("FAILED", "PUBLISH_FAILED"):
                 raise RuntimeError(f"TikTok publish failed: {data}")
