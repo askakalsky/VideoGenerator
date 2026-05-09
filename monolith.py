@@ -10,6 +10,7 @@
 Результат: 3 готовых видео с субтитрами и музыкой + обложки
 """
 
+import base64
 import logging
 import random
 import sys
@@ -115,6 +116,10 @@ AUDIO_FORMATS = {'.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg'}
 # Настройки ElevenLabs
 ELEVENLABS_VOICE = "jessica"  # Голос по умолчанию
 ELEVENLABS_MODEL = "v3"       # Модель по умолчанию
+
+# Настройки валидации TTS (аудио сравнивается с оригиналом через STT)
+TTS_MIN_SIMILARITY = 0.65   # Минимальное совпадение TTS↔оригинал (0..1)
+TTS_MAX_ATTEMPTS = 3        # Макс. попыток на одну часть
 
 # Настройки Gemini
 GEMINI_MODEL = "gemini-flash-latest"
@@ -768,7 +773,31 @@ class TextToSpeech:
         if max_retries is None:
             max_retries = len(self.api_keys)
 
-        # Пробуем генерацию с переключением ключей
+        # Внешний цикл — авто-валидация с регенерацией при плохом аудио
+        last_sim = 0.0
+        for tts_attempt in range(TTS_MAX_ATTEMPTS):
+            if tts_attempt > 0:
+                logger.warning(
+                    f"   🔁 Регенерация (попытка {tts_attempt + 1}/{TTS_MAX_ATTEMPTS}, "
+                    f"prev similarity: {last_sim:.2f})"
+                )
+                output_file.unlink(missing_ok=True)
+                output_file.with_suffix('.timings.json').unlink(missing_ok=True)
+
+            self._generate_once(convert_params, output_file, max_retries)
+            ok, last_sim = self._validate_audio(output_file, text)
+            mark = "✅" if ok else "❌"
+            logger.info(f"   📊 Валидация аудио: similarity={last_sim:.2f} {mark}")
+            if ok:
+                return output_file
+
+        raise RuntimeError(
+            f"❌ TTS не смог сгенерировать валидное аудио за {TTS_MAX_ATTEMPTS} попыток "
+            f"(последний similarity {last_sim:.2f} < {TTS_MIN_SIMILARITY})"
+        )
+
+    def _generate_once(self, convert_params: dict, output_file: Path, max_retries: int) -> Path:
+        """Одна TTS-генерация с переключением API ключей. Без валидации."""
         for attempt in range(max_retries):
             try:
                 current_key_name = self.api_keys[self.current_key_index]['name']
@@ -779,25 +808,40 @@ class TextToSpeech:
                 else:
                     logger.info(f"   🔑 Используется ключ: {current_key_name}")
 
-                # Получаем клиент для текущего ключа
                 client = self._get_current_client()
 
-                # Генерируем аудио
-                response = client.text_to_speech.convert(**convert_params)
+                # Пробуем TTS с таймингами для точных субтитров
+                timings_path = output_file.with_suffix('.timings.json')
+                try:
+                    ts_response = client.text_to_speech.convert_with_timestamps(**convert_params)
+                    audio_bytes = base64.b64decode(ts_response.audio_base64)
+                    with open(output_file, 'wb') as f:
+                        f.write(audio_bytes)
 
-                # Сохраняем
-                with open(output_file, 'wb') as f:
-                    for chunk in response:
-                        if chunk:
-                            f.write(chunk)
+                    alignment = ts_response.alignment
+                    alignment_data = {
+                        "characters": list(alignment.characters),
+                        "character_start_times_ms": list(alignment.character_start_times_ms),
+                        "character_durations_ms": list(alignment.character_durations_ms),
+                    }
+                    with open(timings_path, 'w', encoding='utf-8') as tf:
+                        json.dump(alignment_data, tf, ensure_ascii=False)
+                    logger.info(f"   ✅ Сохранено: {output_file} (+ timings)")
+                except Exception as ts_err:
+                    # Модель не поддерживает таймстампы (eleven_v3 alpha) — fallback на STT
+                    logger.warning(f"   ⚠️  convert_with_timestamps failed: {ts_err}. Fallback на обычный TTS")
+                    timings_path.unlink(missing_ok=True)
+                    response = client.text_to_speech.convert(**convert_params)
+                    with open(output_file, 'wb') as f:
+                        for chunk in response:
+                            if chunk:
+                                f.write(chunk)
+                    logger.info(f"   ✅ Сохранено: {output_file}")
 
-                logger.info(f"   ✅ Сохранено: {output_file}")
                 return output_file
 
             except Exception as e:
                 error_str = str(e)
-
-                # Проверяем, является ли это ошибкой квоты
                 is_quota_error = (
                     'quota_exceeded' in error_str.lower() or
                     '401' in error_str or
@@ -805,27 +849,51 @@ class TextToSpeech:
                 )
 
                 if is_quota_error:
-                    logger.warning(
-                        f"   ⚠️  Квота исчерпана для {current_key_name}")
-
-                    # Пробуем переключиться на следующий ключ
+                    logger.warning(f"   ⚠️  Квота исчерпана для {current_key_name}")
                     if self._switch_to_next_key():
-                        continue  # Повторяем попытку
-                    else:
-                        raise RuntimeError(
-                            "❌ Все API ключи ElevenLabs исчерпаны!\n"
-                            f"Всего ключей: {len(self.api_keys)}\n"
-                            "Добавьте новые ключи или дождитесь обновления квоты."
-                        ) from e
-                else:
-                    # Другая ошибка - пробрасываем
-                    logger.error(f"   ❌ Ошибка генерации: {e}")
-                    raise
+                        continue
+                    raise RuntimeError(
+                        "❌ Все API ключи ElevenLabs исчерпаны!\n"
+                        f"Всего ключей: {len(self.api_keys)}\n"
+                        "Добавьте новые ключи или дождитесь обновления квоты."
+                    ) from e
+                logger.error(f"   ❌ Ошибка генерации: {e}")
+                raise
 
-        # Если все попытки исчерпаны
-        raise RuntimeError(
-            f"❌ Не удалось сгенерировать аудио после {max_retries} попыток"
-        )
+        raise RuntimeError(f"❌ Не удалось сгенерировать аудио после {max_retries} попыток")
+
+    def _validate_audio(self, audio_path: Path, original_text: str) -> tuple:
+        """
+        STT-валидация аудио: распознаём произнесённый текст и сравниваем с оригиналом.
+
+        Returns:
+            (ok: bool, similarity: float) — ok=True если similarity >= TTS_MIN_SIMILARITY.
+            При ошибке STT возвращаем (True, 1.0) — не блокируем пайплайн.
+        """
+        from difflib import SequenceMatcher
+
+        try:
+            client = self._get_current_client()
+            with open(audio_path, "rb") as f:
+                stt_resp = client.speech_to_text.convert(
+                    file=f,
+                    model_id="scribe_v1",
+                    timestamps_granularity="word",
+                )
+            recognized = " ".join(
+                getattr(w, "text", "").strip()
+                for w in (stt_resp.words or [])
+                if getattr(w, "type", None) == "word"
+            )
+        except Exception as e:
+            logger.warning(f"   ⚠️  Валидация STT упала: {e}. Принимаем аудио как валидное.")
+            return True, 1.0
+
+        def _norm(s: str) -> str:
+            return re.sub(r'[^\w\s]', ' ', s.lower())
+
+        sim = SequenceMatcher(None, _norm(original_text), _norm(recognized)).ratio()
+        return sim >= TTS_MIN_SIMILARITY, sim
 
     def get_usage(self, key_index: Optional[int] = None) -> Dict:
         """
@@ -926,6 +994,24 @@ def select_random_file(directory: Path, extensions: set) -> Path:
 
     selected = random.choice(files)
     return selected
+
+
+def get_video_bitrate(video_path: Path) -> Optional[int]:
+    """Возвращает битрейт видео в bps через ffprobe. None если не определилось."""
+    try:
+        result = subprocess.run(
+            [
+                'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                '-show_entries', 'stream=bit_rate',
+                '-of', 'default=nw=1:nk=1',
+                str(video_path),
+            ],
+            capture_output=True, text=True, timeout=10
+        )
+        br = result.stdout.strip()
+        return int(br) if br.isdigit() else None
+    except Exception:
+        return None
 
 
 def select_music_by_style(music_style: Optional[str] = None) -> Path:
@@ -1112,6 +1198,17 @@ def create_video_from_audio(
     )
     generator.generate(transcription_result, ass_path)
 
+    # Адаптивный битрейт: не пытаемся вытянуть выше source качества
+    default_bitrate_kbps = int(VIDEO_BITRATE.rstrip('k'))
+    source_bitrate = get_video_bitrate(video_path)
+    if source_bitrate and source_bitrate > 0:
+        target_kbps = min(default_bitrate_kbps, source_bitrate // 1000)
+        bitrate_str = f"{target_kbps}k"
+        logger.info(f"📊 Source bitrate: {source_bitrate // 1000}k → output: {bitrate_str}")
+    else:
+        bitrate_str = VIDEO_BITRATE
+        logger.info(f"📊 Source bitrate unknown, using default: {bitrate_str}")
+
     # Выбор кодека (GPU если доступен, иначе CPU)
     gpu_caps = detect_gpu_capabilities()
     if gpu_caps.get("nvenc"):
@@ -1120,8 +1217,8 @@ def create_video_from_audio(
             '-preset', 'p4',
             '-rc', 'vbr',
             '-cq', str(CRF),
-            '-b:v', VIDEO_BITRATE,
-            '-maxrate', VIDEO_BITRATE,
+            '-b:v', bitrate_str,
+            '-maxrate', bitrate_str,
             '-bufsize', '20M',
             '-gpu', '0',
         ]
@@ -1131,7 +1228,7 @@ def create_video_from_audio(
             '-c:v', 'h264_qsv',
             '-preset', 'medium',
             '-global_quality', str(CRF),
-            '-b:v', VIDEO_BITRATE,
+            '-b:v', bitrate_str,
         ]
         logger.info("🚀 Рендеринг (Intel QSV)...")
     else:
@@ -1148,23 +1245,28 @@ def create_video_from_audio(
     output_path_ffmpeg = escape_ffmpeg_path(output_path)
     ass_name = ass_path.name
 
-    fade_in = 1.5   # секунд нарастания в начале
-    fade_out = 1.5  # секунд затухания в конце
-    fade_out_start = max(0.0, audio_duration - fade_out)
+    fade_in = 1.5            # секунд нарастания в начале
+    fade_out = 1.5           # секунд затухания в конце (только музыка+видео)
+    total_duration = audio_duration + fade_out  # видео+музыка длиннее голоса
+    fade_out_start = audio_duration             # затухание начинается ровно после голоса
 
-    # filter_complex с явной обрезкой видео и фейдами
+    # filter_complex: голос играет чисто до конца, потом музыка+видео плавно затухают
     filter_complex = (
-        # 1. Обрезаем видео, добавляем fade in/out
-        f"[0:v]trim=duration={audio_duration},setpts=PTS-STARTPTS,"
-        f"fade=t=in:st=0:d={fade_in},fade=t=out:st={fade_out_start}:d={fade_out}[v_trimmed];"
-        # 2. Музыка: зацикливаем, регулируем громкость, fade in/out
-        f"[2:a]volume={MUSIC_VOLUME},aloop=loop=-1:size=2e+09,atrim=0:{audio_duration},asetpts=PTS-STARTPTS,"
-        f"afade=t=in:st=0:d={fade_in},afade=t=out:st={fade_out_start}:d={fade_out}[music];"
-        # 3. Голос: громкость, fade in/out
+        # 1. Видео: длина = total_duration, fade in/out
+        f"[0:v]trim=duration={total_duration},setpts=PTS-STARTPTS,"
+        f"fade=t=in:st=0:d={fade_in},"
+        f"fade=t=out:st={fade_out_start}:d={fade_out}[v_trimmed];"
+        # 2. Музыка: луп → trim до total_duration → fade in/out
+        f"[2:a]volume={MUSIC_VOLUME},aloop=loop=-1:size=2e+09,"
+        f"atrim=0:{total_duration},asetpts=PTS-STARTPTS,"
+        f"afade=t=in:st=0:d={fade_in},"
+        f"afade=t=out:st={fade_out_start}:d={fade_out}[music];"
+        # 3. Голос: ТОЛЬКО fade-in, БЕЗ fade-out, дополняем тишиной до total_duration
         f"[1:a]volume={AUDIO_VOLUME},atrim=0:{audio_duration},asetpts=PTS-STARTPTS,"
-        f"afade=t=in:st=0:d=0.5,afade=t=out:st={fade_out_start}:d={fade_out}[voice];"
-        # 4. Микшируем голос + музыку
-        f"[voice][music]amix=inputs=2:duration=first:dropout_transition=0[audio];"
+        f"afade=t=in:st=0:d=0.5,"
+        f"apad=whole_dur={total_duration}[voice];"
+        # 4. Микшируем — duration=longest чтобы хвост музыки не обрезался
+        f"[voice][music]amix=inputs=2:duration=longest:dropout_transition=0[audio];"
         # 5. Прожигаем субтитры на обрезанное видео
         f"[v_trimmed]ass={ass_name}[video]"
     )
@@ -1195,8 +1297,8 @@ def create_video_from_audio(
         '-pix_fmt', 'yuv420p',
         '-movflags', '+faststart',
 
-        # Останавливаем когда закончится самый короткий поток
-        '-shortest',
+        # Жёстко ограничиваем выход (голос + хвост fade out для музыки/видео)
+        '-t', str(total_duration),
 
         # Выход
         output_path_ffmpeg

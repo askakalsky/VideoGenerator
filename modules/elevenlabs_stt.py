@@ -5,6 +5,7 @@ Replaces stable-whisper/torch dependency for GitHub Actions compatibility.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -71,12 +72,31 @@ class ElevenLabsTranscriber:
     def transcribe(self, audio_path: Path) -> WhisperCompatibleResult:
         """
         Transcribe audio and return a Whisper-compatible result.
-        Tries all API keys in rotation if one fails.
+
+        Fast path: if `<audio>.timings.json` exists (saved by TTS-with-timestamps),
+        use those character-level timings — exact match with original text.
+        Fallback: ElevenLabs STT API with rotation across API keys.
         """
         from elevenlabs.client import ElevenLabs
 
         audio_path = Path(audio_path)
-        logger.info(f"🎙️  ElevenLabs STT: {audio_path.name}")
+        timings_path = audio_path.with_suffix('.timings.json')
+        if timings_path.exists():
+            logger.info(f"📝 TTS timings: {timings_path.name}")
+            with open(timings_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            word_items = self._chars_to_word_items(
+                data["characters"],
+                data["character_start_times_ms"],
+                data["character_durations_ms"],
+            )
+            logger.info(f"   └─ Получено слов из TTS: {len(word_items)}")
+            segments = self._group_into_segments(word_items)
+            segments = self._split_long_segments(segments)
+            logger.info(f"   └─ Сегментов: {len(segments)}")
+            return WhisperCompatibleResult(segments=segments)
+
+        logger.info(f"🎙️  ElevenLabs STT (fallback): {audio_path.name}")
 
         last_error = None
         for i, key in enumerate(self.api_keys):
@@ -152,6 +172,36 @@ class ElevenLabsTranscriber:
                     chunk = seg.words[i:i + MAX_SEGMENT_WORDS]
                     result.append(_make_segment(chunk))
         return result
+
+    @staticmethod
+    def _chars_to_word_items(chars, starts_ms, durs_ms):
+        """Group character timings into word-level items compatible with _group_into_segments."""
+        SEPARATORS = {' ', '\n', '\t', '\r'}
+
+        class _W:
+            __slots__ = ('text', 'start', 'end', 'type')
+
+            def __init__(self, text, start, end):
+                self.text = text
+                self.start = start
+                self.end = end
+                self.type = 'word'
+
+        words = []
+        buf, w_start, w_end = [], None, None
+        for ch, st_ms, dur_ms in zip(chars, starts_ms, durs_ms):
+            if ch in SEPARATORS:
+                if buf:
+                    words.append(_W(''.join(buf), w_start / 1000.0, w_end / 1000.0))
+                    buf, w_start, w_end = [], None, None
+                continue
+            if w_start is None:
+                w_start = st_ms
+            w_end = st_ms + dur_ms
+            buf.append(ch)
+        if buf:
+            words.append(_W(''.join(buf), w_start / 1000.0, w_end / 1000.0))
+        return words
 
 
 def _make_segment(words: List[WordTiming]) -> Segment:
