@@ -133,8 +133,8 @@ class TikTokAPIPoster:
             data = resp.json()
             status = data.get("data", {}).get("status", "")
             logger.info("TikTok publish status: %s", status)
-            if status == "PUBLISH_COMPLETE":
-                logger.info("Video published successfully!")
+            if status in ("PUBLISH_COMPLETE", "SEND_TO_USER_INBOX"):
+                logger.info("✅ Video uploaded to TikTok inbox/published!")
                 return data
             if status in ("FAILED", "PUBLISH_FAILED"):
                 raise RuntimeError(f"TikTok publish failed: {data}")
