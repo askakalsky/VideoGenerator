@@ -66,6 +66,9 @@ class TikTokAPIPoster:
             "post_info": {
                 "title": caption[:150],
                 "privacy_level": "SELF_ONLY",
+                "disable_duet": False,
+                "disable_comment": False,
+                "disable_stitch": False,
             },
             "source_info": {
                 "source": "FILE_UPLOAD",
@@ -76,7 +79,7 @@ class TikTokAPIPoster:
         }
 
         resp = requests.post(
-            f"{self.BASE_URL}/post/publish/inbox/video/init/",
+            f"{self.BASE_URL}/post/publish/video/init/",
             json=body,
             headers=headers,
         )
@@ -86,7 +89,7 @@ class TikTokAPIPoster:
             self.access_token = self._refresh_access_token()
             headers = self._auth_headers()
             resp = requests.post(
-                f"{self.BASE_URL}/post/publish/inbox/video/init/",
+                f"{self.BASE_URL}/post/publish/video/init/",
                 json=body,
                 headers=headers,
             )
