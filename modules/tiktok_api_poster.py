@@ -94,6 +94,7 @@ class TikTokAPIPoster:
             )
 
         data = resp.json()
+        logger.info("TikTok init params: file_size=%d chunk_size=%d chunk_count=%d", file_size, chunk_size, chunk_count)
         logger.info("TikTok init response: %s", data)
 
         err_code = data.get("error", {}).get("code", "ok")
