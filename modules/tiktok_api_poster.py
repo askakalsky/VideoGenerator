@@ -56,7 +56,7 @@ class TikTokAPIPoster:
             chunk_size = file_size
             chunk_count = 1
         else:
-            chunk_size = max(MIN_CHUNK_SIZE, min(MAX_CHUNK_SIZE, 10 * 1024 * 1024))
+            chunk_size = MAX_CHUNK_SIZE  # 64MB chunks → fewer total chunks
             chunk_count = math.ceil(file_size / chunk_size)
 
         headers = self._auth_headers()
