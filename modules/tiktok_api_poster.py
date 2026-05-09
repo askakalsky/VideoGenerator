@@ -78,7 +78,7 @@ class TikTokAPIPoster:
         }
 
         resp = requests.post(
-            f"{self.BASE_URL}/post/publish/video/init/",
+            f"{self.BASE_URL}/post/publish/inbox/video/init/",
             json=body,
             headers=headers,
         )
@@ -88,7 +88,7 @@ class TikTokAPIPoster:
             self.access_token = self._refresh_access_token()
             headers = self._auth_headers()
             resp = requests.post(
-                f"{self.BASE_URL}/post/publish/video/init/",
+                f"{self.BASE_URL}/post/publish/inbox/video/init/",
                 json=body,
                 headers=headers,
             )
@@ -125,7 +125,7 @@ class TikTokAPIPoster:
         for _ in range(30):
             time.sleep(10)
             resp = requests.post(
-                f"{self.BASE_URL}/post/publish/status/fetch/",
+                f"{self.BASE_URL}/post/publish/status/fetch/?fields=status,fail_reason",
                 json={"publish_id": publish_id},
                 headers=headers,
             )
