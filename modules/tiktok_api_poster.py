@@ -108,16 +108,19 @@ class TikTokAPIPoster:
     def _upload_chunks(self, video_path: str, upload_url: str, file_size: int, chunk_size: int, chunk_count: int):
         with open(video_path, "rb") as f:
             for i in range(chunk_count):
-                chunk = f.read(chunk_size)
+                is_last = (i == chunk_count - 1)
+                # Last chunk: read ALL remaining bytes (TikTok allows up to 128MB for last chunk)
+                chunk = f.read() if is_last else f.read(chunk_size)
                 start = i * chunk_size
-                end = min(start + len(chunk) - 1, file_size - 1)
+                end = start + len(chunk) - 1
                 headers = {
                     "Content-Range": f"bytes {start}-{end}/{file_size}",
                     "Content-Type": "video/mp4",
+                    "Content-Length": str(len(chunk)),
                 }
-                resp = requests.put(upload_url, data=chunk, headers=headers, timeout=120)
+                resp = requests.put(upload_url, data=chunk, headers=headers, timeout=300)
                 resp.raise_for_status()
-                logger.info("Uploaded chunk %d/%d", i + 1, chunk_count)
+                logger.info("Uploaded chunk %d/%d (%d bytes)", i + 1, chunk_count, len(chunk))
 
     def _poll_status(self, publish_id: str, headers: dict) -> dict:
         for _ in range(30):
